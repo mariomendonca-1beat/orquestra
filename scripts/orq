@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+# orq — mecânica do orquestrador de demandas (herdr + git + estado em arquivos).
+# Único ponto que fala com o herdr. Agentes chamam o orq, nunca o herdr direto.
+# Compatível com o bash 3.2 do macOS.
+set -euo pipefail
+
+ORQ_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ORQ="$ORQ_HOME/scripts/orq"
+HERDR="${ORQ_HERDR:-herdr}"
+INTERVALO="${ORQ_INTERVALO:-10}"
+PAPEL="${ORQ_PAPEL:-orquestrador}"
+
+FASES="nova investigando spec-pronto aprovado implementando pr-aberto concluida"
+
+die() { echo "orq: $*" >&2; exit 1; }
+
+# --- raiz e estado ----------------------------------------------------------
+
+achar_raiz() {
+  if [ -n "${ORQ_RAIZ:-}" ]; then echo "$ORQ_RAIZ"; return; fi
+  local d="$PWD"
+  while [ "$d" != "/" ]; do
+    if [ -d "$d/.orquestra" ]; then echo "$d"; return; fi
+    d="$(dirname "$d")"
+  done
+  die "não achei a raiz (pasta com .orquestra/) subindo de $PWD; defina ORQ_RAIZ"
+}
+
+dir_demanda() { echo "$ESTADO/$1"; }
+
+exigir_demanda() {
+  [ -d "$(dir_demanda "$1")" ] || die "demanda '$1' não existe (veja: orq status)"
+}
+
+fase_de() { head -n1 "$(dir_demanda "$1")/estado"; }
+
+registrar() { # slug texto
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$2" >> "$(dir_demanda "$1")/historico"
+}
+
+# repo -> apelido curto usado no nome do agente (limite de 32 chars do herdr)
+apelido() {
+  local a="$1"
+  case "$a" in
+    jaguar-plus) a="plus" ;;
+    jaguar-plus-*) a="${a#jaguar-plus-}" ;;
+    jaguar-*) a="${a#jaguar-}" ;;
+  esac
+  echo "$a" | tr -c 'a-z0-9-\n' '-' | cut -c1-10
+}
+
+validar_slug() {
+  echo "$1" | grep -Eq '^[a-z][a-z0-9-]{0,17}$' \
+    || die "slug inválido '$1': use [a-z][a-z0-9-], até 18 caracteres"
+}
+
+# agentes: "nome pane workspace papel repo worktree"
+agente_campo() { # slug nome campo#
+  awk -v n="$2" -v c="$3" '$1==n {print $c}' "$(dir_demanda "$1")/agentes" | tail -n1
+}
+
+agente_registrar() { # slug nome pane ws papel repo wt
+  local f; f="$(dir_demanda "$1")/agentes"
+  awk -v n="$2" '$1!=n' "$f" > "$f.tmp" || true
+  mv "$f.tmp" "$f"
+  echo "$2 $3 $4 $5 ${6:--} ${7:--}" >> "$f"
+}
+
+slug_do_agente() { # nome -> slug (procura em todas as demandas)
+  local d
+  for d in "$ESTADO"/*/; do
+    [ -f "$d/agentes" ] || continue
+    if awk -v n="$1" '$1==n {f=1} END {exit !f}' "$d/agentes"; then basename "$d"; return; fi
+  done
+}
+
+# --- herdr ------------------------------------------------------------------
+
+h() { "$HERDR" "$@"; }
+
+renderizar() { # template destino slug [repo branch worktree]
+  sed -e "s|{{SLUG}}|$3|g" -e "s|{{ORQ}}|$ORQ|g" -e "s|{{RAIZ}}|$RAIZ|g" \
+      -e "s|{{DEMANDA}}|$(dir_demanda "$3")|g" -e "s|{{REPO}}|${4:-}|g" \
+      -e "s|{{BRANCH}}|${5:-}|g" -e "s|{{WORKTREE}}|${6:-}|g" "$1" > "$2"
+}
+
+# rótulo da pane no herdr: "<slug> - lider" ou "<slug> - dev <apelido>"
+rotular_pane() { # pane slug papel [repo]
+  local r="lider"
+  [ "$3" = dev ] && r="dev $(apelido "$4")"
+  h pane rename "$1" "$2 - $r" >/dev/null 2>&1 || true
+}
+
+subir_agente() { # nome pane arquivo-prompt [confiar]
+  local saida
+  if ! saida="$(h agent start "$1" --kind claude --pane "$2" --timeout 120000 -- --permission-mode auto 2>&1)"; then
+    # worktree recém-criada pelo próprio orq é uma raiz git nova: o Claude pergunta se
+    # confia na pasta. Só nesse caso o orq responde "sim" sozinho.
+    if [ "${4:-}" = confiar ] && h agent read "$1" --source detection 2>/dev/null | grep -q "trust this folder"; then
+      h agent send-keys "$1" down enter >/dev/null
+      h agent wait "$1" --until idle --timeout 60000 >/dev/null \
+        || { echo "orq: '$1' não ficou pronto após confiar na pasta. Veja: orq ler $1" >&2; return 1; }
+      echo "confiei na worktree nova de '$1'"
+    else
+      echo "$saida" >&2
+      echo "orq: '$1' não ficou pronto ao subir (talvez travado num diálogo). Veja: orq ler $1" >&2
+      return 1
+    fi
+  fi
+  h agent prompt "$1" "Leia o arquivo $3 e siga as instruções dele à risca." >/dev/null
+}
+
+# --- comandos ---------------------------------------------------------------
+
+cmd_nova() {
+  [ $# -eq 2 ] || die "uso: orq nova <slug> <arquivo-brief>"
+  local slug="$1" brief="$2" d ws pane r
+  validar_slug "$slug"
+  [ -f "$brief" ] || die "brief '$brief' não existe"
+  d="$(dir_demanda "$slug")"
+  [ ! -e "$d" ] || die "demanda '$slug' já existe"
+  mkdir -p "$d"
+  cp "$brief" "$d/brief.md"
+  echo nova > "$d/estado"
+  : > "$d/agentes"
+  registrar "$slug" "nova"
+
+  r="$(h workspace create --cwd "$RAIZ" --label "$slug - lider" --no-focus \
+        --env "ORQ_RAIZ=$RAIZ" --env "ORQ_PAPEL=lider" --env "ORQ_SLUG=$slug")"
+  ws="$(echo "$r" | jq -r '.result.workspace.workspace_id')"
+  pane="$(echo "$r" | jq -r '.result.root_pane.pane_id')"
+  echo "$ws" > "$d/workspace"
+  agente_registrar "$slug" "lider-$slug" "$pane" "$ws" lider
+  rotular_pane "$pane" "$slug" lider
+  renderizar "$ORQ_HOME/prompts/lider.md" "$d/.prompt-lider.md" "$slug"
+  subir_agente "lider-$slug" "$pane" "$d/.prompt-lider.md"
+  echo "demanda '$slug' criada: workspace $ws, agente lider-$slug"
+}
+
+# transições válidas: "de>para:papel" (papel '*' = qualquer)
+TRANSICOES="nova>investigando:* investigando>spec-pronto:* spec-pronto>aprovado:orquestrador
+spec-pronto>investigando:orquestrador aprovado>implementando:* implementando>spec-pronto:*
+implementando>pr-aberto:*"
+
+cmd_estado() {
+  [ $# -ge 2 ] || die "uso: orq estado <slug> <fase> [nota]"
+  local slug="$1" para="$2" nota="${3:-}" d de t ok=""
+  exigir_demanda "$slug"
+  d="$(dir_demanda "$slug")"
+  de="$(fase_de "$slug")"
+  for t in $TRANSICOES; do
+    if [ "${t%%:*}" = "$de>$para" ]; then
+      case "${t##*:}" in
+        '*') ok=1 ;;
+        "$PAPEL") ok=1 ;;
+        *) die "só o ${t##*:} pode mudar '$slug' de $de para $para (você é: $PAPEL)" ;;
+      esac
+    fi
+  done
+  if [ -z "$ok" ]; then
+    local validas
+    validas="$(for t in $TRANSICOES; do echo "${t%%:*}"; done | grep "^$de>" | tr '\n' ' ')"
+    die "transição $de -> $para inválida para '$slug'. Válidas a partir de $de: ${validas:-nenhuma}"
+  fi
+  case "$para" in
+    spec-pronto)
+      [ -s "$d/spec.md" ] || die "spec-pronto exige $d/spec.md"
+      [ "$de" != implementando ] || [ -n "$nota" ] || die "voltar para spec-pronto exige nota com o delta de escopo" ;;
+    investigando)
+      if [ "$de" = spec-pronto ]; then
+        [ -n "$nota" ] || die "devolver o spec exige nota com o feedback"
+        printf '\n## Feedback do gate (%s)\n\n%s\n' "$(date '+%Y-%m-%d %H:%M')" "$nota" >> "$d/brief.md"
+      fi ;;
+    pr-aberto)
+      echo "$nota" | grep -q 'https://' || die "pr-aberto exige os links dos PRs na nota"
+      echo "$nota" > "$d/prs" ;;
+  esac
+  echo "$para" > "$d/estado"
+  registrar "$slug" "$de -> $para${nota:+ | $nota}"
+  echo "$slug: $de -> $para"
+}
+
+cmd_dev() {
+  [ $# -eq 3 ] || die "uso: orq dev <slug> <repo> <branch>"
+  local slug="$1" repo="$2" branch="$3" d ap nome wt ancora r pane ws dir
+  exigir_demanda "$slug"
+  [ "$PAPEL" != dev ] || die "dev não cria dev; fale com o líder"
+  [ "$(fase_de "$slug")" = implementando ] \
+    || die "'$slug' está em $(fase_de "$slug"); devs só nascem em implementando (depois do gate)"
+  d="$(dir_demanda "$slug")"
+  [ -d "$RAIZ/$repo/.git" ] || [ -f "$RAIZ/$repo/.git" ] || die "repo '$RAIZ/$repo' não é um checkout git"
+  git -C "$RAIZ/$repo" rev-parse --verify -q "refs/heads/$branch" >/dev/null \
+    || die "branch '$branch' não existe em $repo; rode jaguar-plus:branch-open antes"
+  ap="$(apelido "$repo")"
+  nome="dev-$slug-$ap"
+  [ -z "$(agente_campo "$slug" "$nome" 1)" ] || die "'$nome' já existe nesta demanda (morto? use orq reviver $slug $repo)"
+  wt="$RAIZ/$repo-wt-$slug"
+  [ ! -e "$wt" ] || die "worktree '$wt' já existe; decida se reaproveita ou remove"
+  git -C "$RAIZ/$repo" worktree add -q "$wt" "$branch"
+
+  # primeiro dev à direita do líder; os seguintes empilhados abaixo do último dev
+  ancora="$(awk '$4=="dev" {p=$2} END {print p}' "$d/agentes")"
+  if [ -n "$ancora" ]; then dir=down; else ancora="$(agente_campo "$slug" "lider-$slug" 2)"; dir=right; fi
+  r="$(h pane split --pane "$ancora" --direction "$dir" --cwd "$wt" --no-focus \
+        --env "ORQ_RAIZ=$RAIZ" --env "ORQ_PAPEL=dev" --env "ORQ_SLUG=$slug")"
+  pane="$(echo "$r" | jq -r '.result.pane.pane_id')"
+  ws="$(cat "$d/workspace")"
+  agente_registrar "$slug" "$nome" "$pane" "$ws" dev "$repo" "$wt"
+  rotular_pane "$pane" "$slug" dev "$repo"
+  [ -f "$d/$repo.md" ] || printf '## Status\n\n## Pergunta\n\n## Pronto para PR\n\n## Feito\n' > "$d/$repo.md"
+  renderizar "$ORQ_HOME/prompts/dev.md" "$d/.prompt-dev-$repo.md" "$slug" "$repo" "$branch" "$wt"
+  subir_agente "$nome" "$pane" "$d/.prompt-dev-$repo.md" confiar
+  echo "dev '$nome' no ar em $wt (branch $branch)"
+}
+
+cmd_falar() {
+  [ $# -eq 2 ] || die "uso: orq falar <agente> \"<mensagem>\""
+  local saida
+  if ! saida="$(h agent prompt "$1" "$2" --wait --until working --until blocked --timeout 30000 2>&1)"; then
+    echo "$saida" >&2
+    echo "orq: entrega a '$1' não confirmada. NÃO reenvie às cegas; últimas linhas da pane:" >&2
+    h agent read "$1" --source recent-unwrapped --lines 30 >&2 || true
+    exit 1
+  fi
+  echo "entregue a $1"
+}
+
+cmd_ler() {
+  [ $# -ge 1 ] || die "uso: orq ler <agente> [linhas]"
+  h agent read "$1" --source recent-unwrapped --lines "${2:-60}"
+}
+
+cmd_teclas() {
+  [ $# -ge 2 ] || die "uso: orq teclas <agente> <tecla>..."
+  h agent send-keys "$@" >/dev/null
+  echo "teclas enviadas a $1"
+}
+
+# estados vivos: "nome status" para todos os agentes do herdr (done vira idle)
+vivos() {
+  { h agent list 2>/dev/null || echo '{"result":{"agents":[]}}'; } | jq -r '.result.agents[] | select(.name != null) |
+    "\(.name) \(if .agent_status == "done" then "idle" else .agent_status end)"'
+}
+
+# snapshot: linhas "F slug fase" e "A slug nome papel status"
+snapshot() { # [slug]
+  local v d slug nome resto st
+  v="$(vivos)"
+  for d in "$ESTADO"/*/; do
+    [ -f "$d/estado" ] || continue
+    slug="$(basename "$d")"
+    [ -z "${1:-}" ] || [ "$1" = "$slug" ] || continue
+    echo "F $slug $(fase_de "$slug")"
+    while read -r nome _ _ papel resto; do
+      [ -n "$nome" ] || continue
+      st="$(echo "$v" | awk -v n="$nome" '$1==n {print $2}')"
+      echo "A $slug $nome $papel ${st:-morto}"
+    done < "$d/agentes"
+  done
+}
+
+cmd_status() {
+  local slug="${1:-}" linha
+  [ -d "$ESTADO" ] && [ -n "$(ls -A "$ESTADO" 2>/dev/null | grep -v '^\.')" ] || { echo "nenhuma demanda"; return; }
+  snapshot "$slug" | while read -r tipo s a b c; do
+    if [ "$tipo" = F ]; then
+      linha="■ $s — $a"
+      [ ! -f "$(dir_demanda "$s")/prs" ] || linha="$linha — $(cat "$(dir_demanda "$s")/prs")"
+      echo "$linha"
+    else
+      printf '    %-34s %-6s %s\n' "$a" "$b" "$c"
+    fi
+  done
+}
+
+# o que conta como evento depende de quem espera
+relevante() { # escopo linha-antiga linha-nova fase-atual
+  local escopo="$1" tipo papel st
+  set -- $3
+  tipo="$1"
+  [ "$tipo" = F ] && { [ "$escopo" = global ]; return; }
+  papel="$4"; st="$5"
+  case "$st" in blocked|morto) [ "$escopo" = global ] && return 0 ;; esac
+  if [ "$escopo" = global ]; then
+    [ "$papel" = lider ] && [ "$st" = idle ] && return 0
+  else
+    [ "$papel" = dev ] && { [ "$st" = idle ] || [ "$st" = morto ]; } && return 0
+  fi
+  return 1
+}
+
+cmd_esperar() {
+  local slug="" max=0 escopo snapf atual antigo inicio mudou linha chave velha
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --max) max="$2"; shift 2 ;;
+      *) slug="$1"; shift ;;
+    esac
+  done
+  if [ -n "$slug" ]; then exigir_demanda "$slug"; escopo="$slug"; snapf="$(dir_demanda "$slug")/.snap"
+  else escopo=global; mkdir -p "$ESTADO"; snapf="$ESTADO/.snap-global"; fi
+  [ -f "$snapf" ] || snapshot "$slug" > "$snapf"
+  inicio="$(date +%s)"
+  while :; do
+    atual="$(snapshot "$slug")"
+    antigo="$(cat "$snapf")"
+    mudou=""
+    while IFS= read -r linha; do
+      [ -n "$linha" ] || continue
+      # chave = tudo menos o último campo (fase ou status)
+      chave="${linha% *}"
+      velha="$(echo "$antigo" | awk -v k="$chave" 'substr($0,1,length(k)+1)==k" " {print}')"
+      [ "$velha" != "$linha" ] || continue
+      [ -n "$velha" ] || continue   # agente/demanda novo: vira linha de base
+      if relevante "$escopo" "$velha" "$linha"; then mudou="$mudou$linha (antes: ${velha##* }"$'\n'; fi
+    done <<< "$atual"
+    # agentes que sumiram do registro não importam; os que sumiram do herdr viram 'morto'
+    echo "$atual" > "$snapf"
+    if [ -n "$mudou" ]; then
+      echo "EVENTOS:"
+      echo "$mudou" | sed -e '/^$/d' -e 's/$/)/' -e 's/^F /fase    /' -e 's/^A /agente  /'
+      return 0
+    fi
+    if [ "$max" -gt 0 ] && [ $(( $(date +%s) - inicio )) -ge "$max" ]; then
+      echo "nada relevante mudou em ${max}s"; return 3
+    fi
+    sleep "$INTERVALO"
+  done
+}
+
+cmd_reviver() {
+  [ $# -ge 1 ] || die "uso: orq reviver <slug> [repo]"
+  local slug="$1" repo="${2:-}" d nome pane ws prompt cwd papel r
+  exigir_demanda "$slug"
+  d="$(dir_demanda "$slug")"
+  if [ -n "$repo" ]; then
+    nome="dev-$slug-$(apelido "$repo")"; prompt="$d/.prompt-dev-$repo.md"
+    cwd="$(agente_campo "$slug" "$nome" 6)"; papel=dev
+  else
+    nome="lider-$slug"; prompt="$d/.prompt-lider.md"; cwd="$RAIZ"; papel=lider
+  fi
+  [ -n "$(agente_campo "$slug" "$nome" 1)" ] || die "'$nome' não está registrado em $slug"
+  if h agent get "$nome" >/dev/null 2>&1; then die "'$nome' está vivo; nada a reviver"; fi
+  pane="$(agente_campo "$slug" "$nome" 2)"
+  ws="$(cat "$d/workspace")"
+  if ! h pane get "$pane" >/dev/null 2>&1; then
+    if h workspace get "$ws" >/dev/null 2>&1; then
+      local qualquer
+      qualquer="$(h pane list --workspace "$ws" | jq -r '.result.panes[0].pane_id')"
+      r="$(h pane split --pane "$qualquer" --direction down --cwd "$cwd" --no-focus \
+            --env "ORQ_RAIZ=$RAIZ" --env "ORQ_PAPEL=$papel" --env "ORQ_SLUG=$slug")"
+      pane="$(echo "$r" | jq -r '.result.pane.pane_id')"
+    else
+      r="$(h workspace create --cwd "$cwd" --label "$slug - lider" --no-focus \
+            --env "ORQ_RAIZ=$RAIZ" --env "ORQ_PAPEL=$papel" --env "ORQ_SLUG=$slug")"
+      ws="$(echo "$r" | jq -r '.result.workspace.workspace_id')"
+      pane="$(echo "$r" | jq -r '.result.root_pane.pane_id')"
+      echo "$ws" > "$d/workspace"
+    fi
+  fi
+  agente_registrar "$slug" "$nome" "$pane" "$ws" "$papel" "${repo:-}" "$(agente_campo "$slug" "$nome" 6)"
+  rotular_pane "$pane" "$slug" "$papel" "$repo"
+  printf '\n\n---\nRETOMADA: uma sessão anterior sua morreu. Antes de agir, leia tudo em %s (estado, historico, spec, contrato, arquivos dos repos) e o git da sua pasta, e continue de onde parou.\n' "$d" > "$d/.retomada"
+  cat "$prompt" "$d/.retomada" > "$prompt.retomada"
+  subir_agente "$nome" "$pane" "$prompt.retomada"
+  registrar "$slug" "reviveu $nome"
+  echo "'$nome' revivido na pane $pane"
+}
+
+cmd_fechar() {
+  [ $# -eq 1 ] || die "uso: orq fechar <slug>"
+  local slug="$1" d nome pane ws papel repo wt
+  exigir_demanda "$slug"
+  d="$(dir_demanda "$slug")"
+  while read -r nome pane ws papel repo wt; do
+    [ "$papel" = dev ] && [ "$wt" != "-" ] && [ -d "$wt" ] || continue
+    if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+      echo "mantida $wt: tem mudanças não commitadas"
+    elif ! git -C "$wt" rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
+      echo "mantida $wt: branch sem upstream (nunca foi pushada)"
+    elif [ "$(git -C "$wt" rev-list --count '@{u}..HEAD')" != 0 ]; then
+      echo "mantida $wt: tem commits não pushados"
+    else
+      git -C "$RAIZ/$repo" worktree remove "$wt" && echo "removida $wt"
+    fi
+  done < "$d/agentes"
+  ws="$(cat "$d/workspace" 2>/dev/null || true)"
+  if [ -n "$ws" ] && h workspace get "$ws" >/dev/null 2>&1; then h workspace close "$ws" >/dev/null && echo "workspace $ws fechado"; fi
+  echo concluida > "$d/estado"
+  registrar "$slug" "-> concluida (fechada)"
+  echo "$slug: concluida"
+}
+
+ajuda() {
+  cat <<EOF
+orq — orquestrador de demandas via herdr   (raiz: $RAIZ, papel: $PAPEL)
+
+  orq nova <slug> <arquivo-brief>     cria demanda, workspace e líder
+  orq estado <slug> <fase> [nota]     muda a fase (fases: $FASES)
+  orq dev <slug> <repo> <branch>      cria worktree + dev (só em implementando)
+  orq falar <agente> "<msg>"          manda mensagem/comando a um agente
+  orq ler <agente> [linhas]           lê a tela recente do agente
+  orq teclas <agente> <tecla>...      envia teclas (só com decisão do usuário)
+  orq status [slug]                   fases e estado vivo dos agentes
+  orq esperar [slug] [--max seg]      bloqueia até um evento relevante
+  orq reviver <slug> [repo]           sobe de novo um agente morto
+  orq fechar <slug>                   fecha workspace, remove worktrees já pushadas
+EOF
+}
+
+main() {
+  [ "${HERDR_ENV:-}" = 1 ] || [ -n "${ORQ_HERDR:-}" ] || die "não estou dentro do herdr (HERDR_ENV != 1)"
+  command -v jq >/dev/null || die "precisa do jq"
+  RAIZ="$(achar_raiz)"
+  ESTADO="${ORQ_ESTADO:-$RAIZ/.orquestra/demandas}"
+  local sub="${1:-ajuda}"; shift || true
+  case "$sub" in
+    nova|estado|dev|falar|ler|teclas|status|esperar|reviver|fechar) "cmd_$sub" "$@" ;;
+    ajuda|-h|--help) ajuda ;;
+    *) die "comando desconhecido '$sub' (orq ajuda)" ;;
+  esac
+}
+
+# Tudo acima são definições; o bash só executa depois de ler esta linha inteira.
+# Assim, reescrever o orq com agentes rodando não corrompe execuções em andamento.
+main "$@"; exit $?

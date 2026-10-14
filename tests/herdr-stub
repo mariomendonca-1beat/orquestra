@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# herdr falso para os testes do orq. Estado em $STUB_DIR:
+#   calls       — uma linha por chamada
+#   agents      — "nome status pane"
+#   seq         — contador de ids
+set -euo pipefail
+D="${STUB_DIR:?}"
+touch "$D/agents" "$D/calls"
+echo "$*" >> "$D/calls"
+n() { local s; s=$(( $(cat "$D/seq" 2>/dev/null || echo 0) + 1 )); echo "$s" > "$D/seq"; echo "$s"; }
+erro() { echo "{\"error\":{\"code\":\"$1\",\"message\":\"$1\"}}" >&2; exit 1; }
+
+case "$1 $2" in
+  "workspace create")
+    i=$(n); echo "{\"result\":{\"workspace\":{\"workspace_id\":\"w$i\"},\"root_pane\":{\"pane_id\":\"w$i:p1\"}}}" ;;
+  "workspace get")
+    grep -qx "closed $3" "$D/calls" 2>/dev/null && erro workspace_not_found; echo '{"result":{}}' ;;
+  "workspace close") echo "closed $3" >> "$D/calls"; echo '{"result":{"type":"ok"}}' ;;
+  "pane split")
+    i=$(n); echo "{\"result\":{\"pane\":{\"pane_id\":\"w1:p$i\"}}}" ;;
+  "pane get"|"pane rename") echo '{"result":{}}' ;;
+  "pane list") echo '{"result":{"panes":[{"pane_id":"w1:p1"}]}}' ;;
+  "agent wait") echo '{"result":{}}' ;;
+  "agent start")
+    nome="$3"; pane=""; prev=""
+    for a in "$@"; do [ "$prev" = --pane ] && pane="$a"; prev="$a"; done
+    grep -v "^$nome " "$D/agents" > "$D/agents.tmp" || true; mv "$D/agents.tmp" "$D/agents"
+    echo "$nome idle $pane" >> "$D/agents"
+    if [ -n "${STUB_TRUST:-}" ]; then echo trust > "$D/trust-$nome"; erro agent_not_ready; fi
+    echo '{"result":{}}' ;;
+  "agent get")
+    grep -q "^$3 " "$D/agents" || erro agent_not_found; echo '{"result":{}}' ;;
+  "agent list")
+    awk 'BEGIN{printf "{\"result\":{\"agents\":["} NR>1{printf ","} {printf "{\"name\":\"%s\",\"agent_status\":\"%s\"}",$1,$2} END{print "]}}"}' "$D/agents" ;;
+  "agent prompt") grep -q "^$3 " "$D/agents" || erro agent_not_found; echo '{"result":{}}' ;;
+  "agent read") if [ -f "$D/trust-$3" ]; then echo "Yes, I trust this folder"; else echo "tela de $3"; fi ;;
+  "agent send-keys") echo '{"result":{}}' ;;
+  *) erro "stub_sem_suporte_$1_$2" ;;
+esac

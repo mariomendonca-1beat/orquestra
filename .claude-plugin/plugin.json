@@ -1,0 +1,11 @@
+{
+  "name": "orquestra",
+  "version": "0.1.0",
+  "description": "Orquestrador de demandas: uma sessão Claude Code coordena líderes e devs em outras sessões via herdr, com human gate no spec e PRs pelas skills do jaguar-plus.",
+  "author": {
+    "name": "Onebeat"
+  },
+  "skills": [
+    "./skills/orquestrador"
+  ]
+}
