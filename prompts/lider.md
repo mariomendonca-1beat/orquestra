@@ -89,5 +89,6 @@ Se vier `AINDA NÃO`, corrija, commite, faça push e rode **outro** subagent nov
 ## Fechamento
 
 `orq estado {{SLUG}} pr-aberto "<links de todos os PRs, um por linha>"` e responda com um
-resumo curto: PRs, ordem de merge, o que o humano deve validar. Não feche worktrees nem o
+resumo curto: PRs, ordem de merge, o veredito do self-review (do subagent) com o link do
+relatório de cada PR, e o que o humano deve validar. Não feche worktrees nem o
 workspace — isso é do orquestrador, quando o humano pedir.

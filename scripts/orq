@@ -113,7 +113,9 @@ iniciar_agente() { # nome pane
 }
 
 tela_tem() { # pane texto — procura na tela recente da pane (o agente pode nem ter subido)
-  h pane read "$1" --source recent --lines 40 2>/dev/null | grep -q "$2"
+  local tela
+  tela="$(h pane read "$1" --source recent --lines 40 2>/dev/null || true)"
+  echo "$tela" | grep -q "$2"
 }
 
 subir_agente() { # nome pane arquivo-prompt [confiar]

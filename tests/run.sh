@@ -45,8 +45,7 @@ grep -q "workspace create .*--label pivot --no-focus" "$STUB_DIR/calls" && ok "w
 grep -q "workspace create .*--env DISABLE_AUTO_UPDATE=true" "$STUB_DIR/calls" && ok "workspace sem update do omz" || nok "omz env no workspace"
 grep -q "pane report-metadata w1:p1 --source orq --agent claude --display-agent lider" "$STUB_DIR/calls" \
   && ok "líder exibido como lider na lista de agentes" || nok "display-agent do líder"
-grep -q "{{SELFREVIEW}}\|$HOME_ORQ/prompts/self-review.md" "$ESTADO/pivot/.prompt-lider.md" \
-  && grep -q "Leia $HOME_ORQ/prompts/self-review.md" "$ESTADO/pivot/.prompt-lider.md" \
+grep -q "Leia $HOME_ORQ/prompts/self-review.md" "$ESTADO/pivot/.prompt-lider.md" \
   && ok "líder aponta o self-review em subagent" || nok "self-review no prompt do líder"
 [ -s "$HOME_ORQ/prompts/self-review.md" ] && ok "prompt do subagent de self-review existe" || nok "prompts/self-review.md"
 grep -q "pane rename w1:p1 pivot - lider" "$STUB_DIR/calls" && ok "pane do líder rotulada" || nok "pane do líder rotulada"
@@ -159,11 +158,12 @@ grep -q "pane send-keys w[0-9]*:p1 n" "$STUB_DIR/calls" && grep -q "pane send-ke
   && ok "responde n e limpa a linha" || nok "teclas omz"
 igual "duas tentativas de subida" "$(grep -c "agent start lider-omz" "$STUB_DIR/calls")" 2
 grep -q "agent prompt lider-omz Leia o arquivo" "$STUB_DIR/calls" && ok "prompt entregue depois do omz" || nok "prompt pós-omz"
+teclas_antes="$(grep -c "send-keys" "$STUB_DIR/calls")"
 out="$(STUB_AUTOMODE=1 "$ORQ" nova am "$T/brief.md" 2>&1)" && nok "diálogo do auto mode devia falhar" || {
   echo "$out" | grep -q "setup do auto mode" && echo "$out" | grep -q "orq falar lider-am \"Leia o arquivo" \
     && ok "detecta o diálogo do auto mode e diz como seguir" || nok "auto mode: $out"; }
 grep -q "agent prompt lider-am" "$STUB_DIR/calls" && nok "não entrega prompt com diálogo aberto" || ok "não entrega prompt com diálogo aberto"
-grep -q "send-keys .*lider-am\|pane send-keys w[0-9]*:p1 n.*am" "$STUB_DIR/calls" && nok "não responde o auto mode" || ok "não responde o auto mode"
+igual "não responde o auto mode (nenhuma tecla enviada)" "$(grep -c "send-keys" "$STUB_DIR/calls")" "$teclas_antes"
 
 echo
 if [ "$falhas" -eq 0 ]; then echo "tudo verde"; else echo "$falhas falha(s)"; exit 1; fi
