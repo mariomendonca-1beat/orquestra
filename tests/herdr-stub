@@ -3,6 +3,8 @@
 #   calls       — uma linha por chamada
 #   agents      — "nome status pane"
 #   seq         — contador de ids
+# STUB_OMZ=1: a 1ª subida falha com o prompt de update do oh-my-zsh na tela, até chegar um "n".
+# STUB_AUTOMODE=1: a subida falha com o diálogo de setup do auto mode na tela.
 set -euo pipefail
 D="${STUB_DIR:?}"
 touch "$D/agents" "$D/calls"
@@ -16,6 +18,12 @@ case "$1 $2" in
   "workspace get")
     grep -qx "closed $3" "$D/calls" 2>/dev/null && erro workspace_not_found; echo '{"result":{}}' ;;
   "workspace close") echo "closed $3" >> "$D/calls"; echo '{"result":{"type":"ok"}}' ;;
+  "workspace rename"|"pane report-metadata") echo '{"result":{}}' ;;
+  "pane read")
+    if [ -f "$D/omz-shown" ] && [ ! -f "$D/omz-done" ]; then echo "[oh-my-zsh] Would you like to update? [Y/n] "
+    elif [ -n "${STUB_AUTOMODE:-}" ]; then echo "Teach auto mode about your environment?"
+    else echo "tela da pane $3"; fi ;;
+  "pane send-keys") [ "${4:-}" != n ] || touch "$D/omz-done"; echo '{"result":{}}' ;;
   "pane split")
     i=$(n); echo "{\"result\":{\"pane\":{\"pane_id\":\"w1:p$i\"}}}" ;;
   "pane get"|"pane rename") echo '{"result":{}}' ;;
@@ -27,6 +35,8 @@ case "$1 $2" in
     grep -v "^$nome " "$D/agents" > "$D/agents.tmp" || true; mv "$D/agents.tmp" "$D/agents"
     echo "$nome idle $pane" >> "$D/agents"
     if [ -n "${STUB_TRUST:-}" ]; then echo trust > "$D/trust-$nome"; erro agent_not_ready; fi
+    if [ -n "${STUB_OMZ:-}" ] && [ ! -f "$D/omz-done" ]; then touch "$D/omz-shown"; erro agent_not_ready; fi
+    [ -z "${STUB_AUTOMODE:-}" ] || erro agent_not_ready
     echo '{"result":{}}' ;;
   "agent get")
     grep -q "^$3 " "$D/agents" || erro agent_not_found; echo '{"result":{}}' ;;

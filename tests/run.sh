@@ -4,6 +4,7 @@ set -uo pipefail
 
 AQUI="$(cd "$(dirname "$0")" && pwd)"
 ORQ="$AQUI/../scripts/orq"
+HOME_ORQ="$(cd "$AQUI/.." && pwd)"
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 
@@ -40,7 +41,14 @@ igual "fase inicial" "$(cat "$ESTADO/pivot/estado")" nova
 grep -q "agent start lider-pivot --kind claude --pane w1:p1 .*--permission-mode auto" "$STUB_DIR/calls" \
   && ok "líder sobe em modo auto" || nok "líder sobe em modo auto"
 grep -q "ORQ_PAPEL=lider" "$STUB_DIR/calls" && ok "workspace marca papel lider" || nok "papel lider"
-grep -q "workspace create .*--label pivot - lider" "$STUB_DIR/calls" && ok "workspace rotulado" || nok "workspace rotulado"
+grep -q "workspace create .*--label pivot --no-focus" "$STUB_DIR/calls" && ok "workspace rotulado só com o slug" || nok "workspace rotulado"
+grep -q "workspace create .*--env DISABLE_AUTO_UPDATE=true" "$STUB_DIR/calls" && ok "workspace sem update do omz" || nok "omz env no workspace"
+grep -q "pane report-metadata w1:p1 --source orq --agent claude --display-agent lider" "$STUB_DIR/calls" \
+  && ok "líder exibido como lider na lista de agentes" || nok "display-agent do líder"
+grep -q "{{SELFREVIEW}}\|$HOME_ORQ/prompts/self-review.md" "$ESTADO/pivot/.prompt-lider.md" \
+  && grep -q "Leia $HOME_ORQ/prompts/self-review.md" "$ESTADO/pivot/.prompt-lider.md" \
+  && ok "líder aponta o self-review em subagent" || nok "self-review no prompt do líder"
+[ -s "$HOME_ORQ/prompts/self-review.md" ] && ok "prompt do subagent de self-review existe" || nok "prompts/self-review.md"
 grep -q "pane rename w1:p1 pivot - lider" "$STUB_DIR/calls" && ok "pane do líder rotulada" || nok "pane do líder rotulada"
 grep -q "agent prompt lider-pivot Leia o arquivo $ESTADO/pivot/.prompt-lider.md" "$STUB_DIR/calls" \
   && ok "líder recebe o template" || nok "líder recebe o template"
@@ -73,6 +81,13 @@ grep -q "agent start dev-pivot-frontend" "$STUB_DIR/calls" && ok "nome curto do 
 grep -q "pane split --pane w1:p1 --direction right" "$STUB_DIR/calls" && ok "1º dev à direita do líder" || nok "1º dev à direita"
 [ -f "$ESTADO/pivot/jaguar-plus-frontend.md" ] && ok "canal do dev criado" || nok "canal do dev"
 grep -q "pane rename w1:p[0-9]* pivot - dev frontend" "$STUB_DIR/calls" && ok "pane do dev rotulada" || nok "pane do dev rotulada"
+grep -q "pane report-metadata w1:p[0-9]* --source orq --agent claude --display-agent dev frontend" "$STUB_DIR/calls" \
+  && ok "dev exibido com o próprio nome na lista de agentes" || nok "display-agent do dev"
+grep -q "pane split .*--env ORQ_PAPEL=dev .*--env DISABLE_AUTO_UPDATE=true" "$STUB_DIR/calls" && ok "pane do dev sem update do omz" || nok "omz env no split"
+P="$ESTADO/pivot/.prompt-dev-jaguar-plus-frontend.md"
+grep -q "{{" "$P" && nok "prompt do dev sem placeholders" || ok "prompt do dev sem placeholders"
+grep -q "Leia $HOME_ORQ/prompts/self-review.md e siga. worktree=$ORQ_RAIZ/jaguar-plus-frontend-wt-pivot" "$P" \
+  && ok "dev despacha self-review em subagent" || nok "self-review no prompt do dev"
 deve_falhar "dev duplicado" "já existe" env ORQ_PAPEL=lider "$ORQ" dev pivot jaguar-plus-frontend feat/pivot
 novo_repo jaguar-plus feat/pivot
 "$ORQ" dev pivot jaguar-plus feat/pivot >/dev/null 2>&1
@@ -117,11 +132,38 @@ deve_falhar "falar com inexistente" "NÃO reenvie" "$ORQ" falar fantasma "oi"
 echo "pr-aberto e fechar"
 deve_falhar "pr-aberto sem link" "links" env ORQ_PAPEL=lider "$ORQ" estado pivot pr-aberto "feito"
 deve_passar "pr-aberto com link" env ORQ_PAPEL=lider "$ORQ" estado pivot pr-aberto "https://github.com/x/y/pull/1"
+deve_falhar "regravar links sem link" "links" env ORQ_PAPEL=lider "$ORQ" estado pivot pr-aberto "mudou"
+deve_passar "regrava links em pr-aberto" env ORQ_PAPEL=lider "$ORQ" estado pivot pr-aberto "https://github.com/x/y/pull/2"
+igual "prs regravado" "$(cat "$ESTADO/pivot/prs")" "https://github.com/x/y/pull/2"
+grep -q "pr-aberto -> pr-aberto | https://github.com/x/y/pull/2" "$ESTADO/pivot/historico" && ok "histórico da regravação" || nok "histórico regravação"
+out="$("$ORQ" status pivot 2>&1)"; echo "$out" | grep -q "pr-aberto — https://github.com/x/y/pull/2" && ok "status mostra links novos" || nok "status links novos: $out"
+
+echo "rotular"
+out="$("$ORQ" rotular pivot 2>&1)"
+echo "$out" | grep -q "rótulos reaplicados a 3 agente" && ok "rotula os agentes vivos" || nok "rotular: $out"
+grep -q "workspace rename w1 pivot" "$STUB_DIR/calls" && ok "renomeia o workspace para o slug" || nok "workspace rename"
+grep -q "pane report-metadata .*--display-agent dev plus" "$STUB_DIR/calls" && ok "rotular dá nome ao dev plus" || nok "rotular dev plus"
+deve_falhar "rotular demanda inexistente" "não existe" "$ORQ" rotular fantasma
 echo sujo > "$ORQ_RAIZ/jaguar-plus-frontend-wt-pivot/arq"
 out="$("$ORQ" fechar pivot 2>&1)"
 echo "$out" | grep -q "mantida .*frontend-wt-pivot: tem mudanças" && ok "mantém worktree suja" || nok "worktree suja: $out"
 echo "$out" | grep -q "mantida .*jaguar-plus-wt-pivot: branch sem upstream" && ok "mantém branch sem push" || nok "sem upstream: $out"
 igual "fase final" "$(cat "$ESTADO/pivot/estado")" concluida
+out="$("$ORQ" rotular 2>&1)"
+echo "$out" | grep -q "a 0 agente" && ok "rotular ignora concluídas" || nok "rotular concluída: $out"
+
+echo "subida protegida"
+out="$(STUB_OMZ=1 "$ORQ" nova omz "$T/brief.md" 2>&1)"
+echo "$out" | grep -q "respondi 'n' ao update do oh-my-zsh" && ok "destrava o prompt do omz e sobe" || nok "omz: $out"
+grep -q "pane send-keys w[0-9]*:p1 n" "$STUB_DIR/calls" && grep -q "pane send-keys w[0-9]*:p1 ctrl+u" "$STUB_DIR/calls" \
+  && ok "responde n e limpa a linha" || nok "teclas omz"
+igual "duas tentativas de subida" "$(grep -c "agent start lider-omz" "$STUB_DIR/calls")" 2
+grep -q "agent prompt lider-omz Leia o arquivo" "$STUB_DIR/calls" && ok "prompt entregue depois do omz" || nok "prompt pós-omz"
+out="$(STUB_AUTOMODE=1 "$ORQ" nova am "$T/brief.md" 2>&1)" && nok "diálogo do auto mode devia falhar" || {
+  echo "$out" | grep -q "setup do auto mode" && echo "$out" | grep -q "orq falar lider-am \"Leia o arquivo" \
+    && ok "detecta o diálogo do auto mode e diz como seguir" || nok "auto mode: $out"; }
+grep -q "agent prompt lider-am" "$STUB_DIR/calls" && nok "não entrega prompt com diálogo aberto" || ok "não entrega prompt com diálogo aberto"
+grep -q "send-keys .*lider-am\|pane send-keys w[0-9]*:p1 n.*am" "$STUB_DIR/calls" && nok "não responde o auto mode" || ok "não responde o auto mode"
 
 echo
 if [ "$falhas" -eq 0 ]; then echo "tudo verde"; else echo "$falhas falha(s)"; exit 1; fi
