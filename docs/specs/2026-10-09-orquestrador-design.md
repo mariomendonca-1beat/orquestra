@@ -17,7 +17,9 @@ pane do herdr — não subagents (subagents continuam livres *dentro* de cada se
   dele apenas quando quiser discutir um spec a fundo.
 - Nenhuma demanda passa para implementação sem o spec aprovado pelo usuário.
 - Após a aprovação, a demanda chega sozinha até PR(s) aberto(s) com `pr-self-review`,
-  usando as skills do plugin `jaguar-plus`.
+  usando as skills do plugin `jaguar-plus`. O self-review roda sempre num subagent novo,
+  sem o histórico da implementação (`prompts/self-review.md`), para não herdar o viés de
+  quem escreveu o código.
 - Em demandas multi-repo, os PRs dos repos são coerentes entre si (mesmo contrato).
 - Fechar o orquestrador, ou um agente morrer, não perde a demanda: tudo é retomável a
   partir de arquivos.
@@ -35,7 +37,7 @@ pane do herdr — não subagents (subagents continuam livres *dentro* de cada se
 |---|---|---|---|
 | **Orquestrador** | sessão do usuário, cwd `jaguar/` | conversa, cria demandas, apresenta gates, repassa decisões, acompanha estado | escrever código; decidir permissões ou aprovar specs sozinho |
 | **Líder** | workspace herdr da demanda, cwd `jaguar/` | investiga os repos, escreve spec/contrato, implementa demandas de um repo, cria e coordena devs, check de integração final | sair do escopo aprovado; começar implementação antes de `aprovado` |
-| **Dev** | pane no workspace da demanda, cwd = worktree do repo | implementa um repo conforme o contrato, verifica, abre PR(s), `pr-self-review` | falar com outro dev; mudar o contrato |
+| **Dev** | pane no workspace da demanda, cwd = worktree do repo | implementa um repo conforme o contrato, verifica, abre PR(s), dispara o `pr-self-review` num subagent novo | falar com outro dev; mudar o contrato; revisar o próprio código no próprio contexto |
 
 Regra de uso dos devs: **demanda de um repo só → o líder faz sozinho, sem devs.**
 Demanda multi-repo → um dev por repo tocado.
@@ -100,7 +102,7 @@ explicando o motivo e o próximo passo.
 | Comando | Quem usa | Efeito |
 |---|---|---|
 | `orq nova <slug> <arquivo-brief>` | orquestrador | cria `demandas/<slug>/`, workspace herdr `<slug>`, sobe o líder `lider-<slug>` com `lider.md` preenchido; fase `nova` |
-| `orq estado <slug> <fase> [nota]` | líder, orquestrador | muda a fase validando a transição (seção 4) |
+| `orq estado <slug> <fase> [nota]` | líder, orquestrador | muda a fase validando a transição (seção 4); `pr-aberto` → `pr-aberto` regrava os links em `prs` |
 | `orq dev <slug> <repo> <branch>` | líder | **exige fase `implementando`**; cria `<repo>-wt-<slug>` via `git worktree add` na branch existente, faz split de pane no workspace da demanda, sobe `dev-<slug>-<repo>` com `dev.md` preenchido |
 | `orq falar <agente> "<msg>"` | orquestrador, líder | `herdr agent prompt`; em timeout, não reenvia — imprime as últimas linhas da pane |
 | `orq ler <agente> [linhas]` | orquestrador, líder | `herdr agent read --source recent-unwrapped` |
@@ -108,16 +110,27 @@ explicando o motivo e o próximo passo.
 | `orq status [slug]` | todos | tabela: demanda, fase, agentes, estado herdr de cada um (`working/idle/blocked/done/morto`) |
 | `orq esperar [slug]` | orquestrador (global), líder (só sua demanda) | bloqueia até algo relevante mudar vs. último snapshot; imprime o que mudou e sai |
 | `orq reviver <slug> [repo]` | orquestrador | sobe nova sessão no lugar de um agente morto, com template + "retome lendo `demandas/<slug>/`" |
+| `orq rotular [slug]` | orquestrador, com ok do usuário | reaplica rótulo de workspace, de pane e o nome exibido na lista de agentes do herdr aos agentes vivos (só exibição) |
 | `orq fechar <slug>` | orquestrador, após o usuário pedir | fecha panes/workspace da demanda; remove worktrees cujo branch não tem mudanças locais pendentes; fase `concluida` |
 
 Detalhes de mecânica:
 
 - Agentes sobem com `herdr agent start <nome> --kind claude --pane <id> -- --permission-mode auto`.
+  Toda pane criada pelo `orq` recebe `DISABLE_AUTO_UPDATE=true` no env, para o prompt de
+  update do oh-my-zsh não engolir o `c` de `claude`. Se o prompt aparecer mesmo assim, o
+  `orq` responde `n`, limpa a linha e tenta uma vez mais. Se a subida parar no diálogo
+  "Teach auto mode about your environment?", o `orq` não responde: avisa e imprime o
+  `orq falar` que entrega o prompt inicial depois da decisão do usuário.
 - O papel do chamador vem de `ORQ_PAPEL` (`lider`/`dev`), injetado pelo `orq` no env do
   workspace/pane ao criá-lo; sem ele, o papel é `orquestrador`. É isso que permite ao
   `orq estado` barrar `aprovado` vindo do líder e ao `orq dev` barrar dev criando dev.
 - Nomes: `lider-<slug>` e `dev-<slug>-<apelido>`, onde o apelido tira o prefixo
   `jaguar-plus-`/`jaguar-` do repo (`jaguar-plus` → `plus`). Slug até 18 caracteres.
+- Rótulos no herdr: o workspace se chama `<slug>`; a pane, `<slug> - lider` ou
+  `<slug> - dev <apelido>`; e o nome exibido na lista de agentes (`pane report-metadata
+  --display-agent`) é `lider` ou `dev <apelido>`. A linha padrão da lista mostra workspace,
+  aba e agente, não o rótulo da pane: sem o display-agent, todos apareciam como `claude` sob
+  o rótulo do líder.
 - O primeiro prompt é o template preenchido; templates longos são escritos em
   `demandas/<slug>/` e o prompt aponta para o arquivo, evitando colar texto grande.
 - `orq esperar` faz polling (intervalo ~10s) de `estado` + `herdr agent list`, compara
@@ -195,14 +208,15 @@ impossíveis sem passar por `aprovado`.
 
 - Líder marca `implementando`.
 - **Um repo:** líder executa ele mesmo: `branch-open` → implementação → verificação →
-  `pr-open` → `pr-self-review`.
+  `pr-open` → `pr-self-review` num subagent novo.
 - **Multi-repo:**
   1. Líder roda `jaguar-plus:branch-open` em cada repo (corta a branch sem trocar de
      branch, seguro no checkout principal).
   2. `orq dev <slug> <repo> <branch>` para cada repo.
   3. Cada dev, na sua worktree: implementa conforme `contrato.md`, verifica (build,
      lint, testes do projeto), commita, `jaguar-plus:pr-open` (incluindo o par
-     homologação/produção quando o fluxo do repo exigir), `jaguar-plus:pr-self-review`,
+     homologação/produção quando o fluxo do repo exigir), `jaguar-plus:pr-self-review`
+     num subagent novo (nunca no próprio contexto),
      escreve `## Feito` com links no `<repo>.md` e para.
   4. Líder roda `orq esperar <slug>` em loop, lê os `<repo>.md`, responde dúvidas.
   5. Com todos os devs em `## Feito`: **check de integração** — confronta os diffs dos

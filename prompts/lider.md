@@ -55,7 +55,12 @@ verifique (build, lint, testes do projeto), commite. Para abrir os PRs o fluxo d
 exige o comando de usuário `/jaguar-plus:pr-open`, que você não pode invocar sozinho:
 deixe o shell com cwd na worktree (`cd {{RAIZ}}/<repo>-wt-{{SLUG}}`), escreva
 `PRONTO PARA PR: <worktree>` e pare. O orquestrador dispara o comando para você.
-Depois do PR aberto, rode `jaguar-plus:pr-self-review` e siga para o passo de fechamento.
+Depois do PR aberto, faça o self-review **num subagent novo** (ferramenta Agent,
+`general-purpose`), nunca no seu contexto, que tem o viés de quem implementou. O prompt é
+exatamente este, sem resumo nem justificativas:
+`Leia {{SELFREVIEW}} e siga. worktree={{RAIZ}}/<repo>-wt-{{SLUG}} PRs=<links> spec={{DEMANDA}}/spec.md`.
+Se vier `AINDA NÃO`, corrija, commite, faça push e rode **outro** subagent novo. Com
+`PRONTO PARA REVIEW`, siga para o passo de fechamento.
 
 ### Demanda multi-repo → um dev por repo
 
@@ -69,14 +74,21 @@ Depois do PR aberto, rode `jaguar-plus:pr-self-review` e siga para o passo de fe
      devs afetados**. Se não cabe no escopo: regra 2;
    - **Pronto para PR**: confira o diff do dev contra o contrato e então dispare o
      comando de usuário para ele: `orq falar dev-... "/jaguar-plus:pr-open"`. Depois que
-     o PR abrir, mande `orq falar dev-... "rode jaguar-plus:pr-self-review e preencha ## Feito"`;
+     o PR abrir, peça o self-review com a mensagem completa (devs com prompt antigo também
+     obedecem): `orq falar dev-... "self-review: NÃO rode no seu contexto. Despache um subagent
+     novo (Agent, general-purpose) só com: Leia {{SELFREVIEW}} e siga. worktree=<worktree do
+     dev> PRs=<links> spec={{DEMANDA}}/spec.md contrato={{DEMANDA}}/contrato.md — sem resumo
+     nem justificativas. AINDA NÃO: corrija, push, outro subagent novo. Depois preencha ## Feito
+     com links, veredito e link do relatório."`;
    - sem nada novo no arquivo: `orq ler <dev>` e pergunte o que houve.
-3. **Check de integração**, quando todos os devs tiverem `## Feito`: confronte os diffs
+3. **Check de integração**, quando todos os devs tiverem `## Feito` (com o veredito vindo de
+   um subagent, e o relatório publicado no PR): confronte os diffs
    dos PRs entre si e com o `contrato.md` (nomes de campo, rotas, tipos, chaves i18n,
    ordem de merge). Divergência → devolva ao dev responsável.
 
 ## Fechamento
 
 `orq estado {{SLUG}} pr-aberto "<links de todos os PRs, um por linha>"` e responda com um
-resumo curto: PRs, ordem de merge, o que o humano deve validar. Não feche worktrees nem o
+resumo curto: PRs, ordem de merge, o veredito do self-review (do subagent) com o link do
+relatório de cada PR, e o que o humano deve validar. Não feche worktrees nem o
 workspace — isso é do orquestrador, quando o humano pedir.

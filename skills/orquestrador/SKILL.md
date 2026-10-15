@@ -36,10 +36,10 @@ Escolha um slug curto (`[a-z][a-z0-9-]`, até 18 chars), escreva o brief no scra
 | Evento | O que fazer |
 |---|---|
 | fase `spec-pronto` | **Gate.** Leia `spec.md` (e `contrato.md`) da demanda e apresente: objetivo, repos e o que entra em cada PR, decisões e riscos, perguntas em aberto. Pergunte: aprova, ajusta ou quer discutir com o líder? |
-| agente `blocked` | `"$ORQ" ler <agente> 40`, mostre ao usuário **o que está sendo pedido** e espere a decisão. Nunca decida sozinho. Com a decisão: `"$ORQ" teclas <agente> <teclas>` ou o usuário responde direto na pane. |
+| agente `blocked` | `"$ORQ" ler <agente> 40`, mostre ao usuário **o que está sendo pedido** e espere a decisão. Nunca decida sozinho. Com a decisão: `"$ORQ" teclas <agente> <teclas>` ou o usuário responde direto na pane. Se o diálogo for o "Teach auto mode about your environment?" na subida (o `orq nova/dev/reviver` avisa), o prompt inicial não foi entregue: depois da decisão, rode o `"$ORQ" falar` que o aviso imprimiu. |
 | líder `idle` | `"$ORQ" ler lider-<slug> 40`. Se for `PRONTO PARA PR: <worktree>` e a fase for `implementando`, dispare `"$ORQ" falar lider-<slug> "/jaguar-plus:pr-open"` e informe o usuário. Se for pergunta, leve ao usuário. Se for só "spec pronto", ignore (o evento de fase cobre). |
 | agente `morto` | Informe e proponha `"$ORQ" reviver <slug> [repo]`; só execute com o ok do usuário. |
-| fase `pr-aberto` | Mostre os links (`"$ORQ" status <slug>`) e a ordem de merge que o líder indicou. |
+| fase `pr-aberto` | Mostre os links (`"$ORQ" status <slug>`), a ordem de merge que o líder indicou e o veredito do self-review. O self-review roda sempre num **subagent novo**, nunca no contexto de quem implementou; se o líder disser que rodou no próprio contexto, devolva. |
 
 Seja breve ao reportar: uma linha por evento, detalhe só quando pede decisão.
 
@@ -59,5 +59,9 @@ um novo gate.
 
 - "como está X?" → `"$ORQ" status [slug]`, e `"$ORQ" ler` se precisar.
 - recado ao líder → `"$ORQ" falar lider-<slug> "<msg>"`. Ao dev, prefira passar pelo líder.
+- "o PR de X mudou de número" → `"$ORQ" estado <slug> pr-aberto "<links novos>"` (na fase
+  `pr-aberto`, regrava os links).
+- "os agentes aparecem com nome repetido" → `"$ORQ" rotular [slug]` (só exibição), com o ok
+  do usuário.
 - "fecha X" / "X foi mergeada" → `"$ORQ" fechar <slug>` (mantém worktrees com trabalho não pushado e diz quais).
 - Se `orq falar` falhar por timeout, **não reenvie**: leia a pane e decida com o usuário.

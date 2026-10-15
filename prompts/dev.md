@@ -28,8 +28,15 @@ mensagens aqui, e você responde **por arquivo**.
 4. Commite na branch `{{BRANCH}}` seguindo a convenção do repo.
 5. Preencha `## Pronto para PR` com: o que fez, como verificou, versão do contrato que
    seguiu. **Pare.** O líder confere e dispara `/jaguar-plus:pr-open` aqui.
-6. Quando pedirem o self-review: rode `jaguar-plus:pr-self-review` e preencha `## Feito`
-   com os links dos PRs e o veredito. Pare.
+6. Quando pedirem o self-review, **não o rode no seu contexto**: você escreveu o código, e
+   revisar com as suposições da implementação é viés. Despache um **subagent novo** (ferramenta
+   Agent, `general-purpose`) com exatamente este prompt, e nada além dele (nem resumo do que
+   fez, nem justificativas):
+   `Leia {{SELFREVIEW}} e siga. worktree={{WORKTREE}} PRs=<links> spec={{DEMANDA}}/spec.md contrato={{DEMANDA}}/contrato.md`
+   - `AINDA NÃO`: corrija o que se sustenta, commite, faça push e despache **outro** subagent
+     novo (nunca reaproveite o anterior);
+   - preencha `## Feito` com os links dos PRs, o veredito da última passada e o link do
+     relatório. Pare.
 
 Se o líder avisar de uma nova versão do contrato, releia, ajuste e registre em `## Status`.
 Ao terminar de responder uma `## Pergunta`, limpe a seção.
