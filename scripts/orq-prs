@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# orq-prs — status dos PRs das demandas (o `orq prs`). Só lê: GitHub via `gh api graphql`
+# (uma chamada por repo, em paralelo) e a topologia do flow no checkout local de cada repo.
+# Chamado pelo orq, que exporta ORQ_RAIZ e ORQ_ESTADO. Compatível com o bash 3.2 do macOS.
+set -euo pipefail
+
+AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GH="${ORQ_GH:-gh}"
+RAIZ="${ORQ_RAIZ:?orq-prs roda pelo orq (orq prs)}"
+ESTADO="${ORQ_ESTADO:?orq-prs roda pelo orq (orq prs)}"
+CACHE="$ESTADO/.prs-ultimo.json"
+ESPERAS="${ORQ_PRS_ESPERAS:-2 5}"   # esperas entre tentativas quando o GitHub falha (5xx/rede)
+ESPERA_UNKNOWN="${ORQ_PRS_ESPERA_UNKNOWN:-3}"
+LOTE=5                              # PRs por chamada quando a chamada do repo inteiro falha
+
+die() { echo "orq prs: $*" >&2; exit 1; }
+
+CAMPOS_LEVES='number state mergeable mergeStateStatus'
+CAMPOS="number title url state isDraft baseRefName headRefName mergedAt mergedBy{login} closedAt
+  mergeable mergeStateStatus author{login} files(first:100){totalCount nodes{path}}
+  comments(last:60){totalCount nodes{createdAt author{login __typename} body}}"
+
+consulta() { # owner repo campos numero...
+  local owner="$1" repo="$2" campos="$3" q n; shift 3
+  q="query { r: repository(owner:\"$owner\", name:\"$repo\") {"
+  for n in "$@"; do q="$q p$n: pullRequest(number:$n) { $campos }"; done
+  echo "$q } }"
+}
+
+# gh api graphql com novas tentativas em 5xx/rede. Erro de GraphQL com dados (PR inexistente)
+# conta como resposta: o PR sai null e vira "não encontrado".
+gql() { # query -> json em stdout
+  local q="$1" out err espera
+  err="$(mktemp)"
+  for espera in $ESPERAS fim; do
+    if out="$("$GH" api graphql -f query="$q" 2>"$err")" || echo "$out" | jq -e '.data.r' >/dev/null 2>&1; then
+      rm -f "$err"; echo "$out"; return 0
+    fi
+    if [ "$espera" = fim ] || ! grep -Eqi '50[0-9]|timeout|timed out|connection|EOF|reset' "$err"; then break; fi
+    sleep "$espera"
+  done
+  cat "$err" >&2; rm -f "$err"; return 1
+}
+
+# todos os PRs de um repo -> {"p<n>": node}; se a chamada inteira falhar, tenta em lotes
+buscar_repo() { # owner repo numero... -> json em stdout
+  local owner="$1" repo="$2" acc='{}' parte lote=() n; shift 2
+  if parte="$(gql "$(consulta "$owner" "$repo" "$CAMPOS" "$@")")"; then
+    echo "$parte" | jq -c '.data.r'; return 0
+  fi
+  [ $# -gt "$LOTE" ] || return 1
+  while [ $# -gt 0 ]; do
+    lote=(); for n in 1 2 3 4 5; do [ $# -gt 0 ] || break; lote+=("$1"); shift; done
+    parte="$(gql "$(consulta "$owner" "$repo" "$CAMPOS" "${lote[@]}")")" || return 1
+    acc="$(jq -c --argjson a "$acc" '$a + .data.r' <<<"$parte")"
+  done
+  echo "$acc"
+}
+
+slug=""; todas=""; json=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --todas) todas=1 ;;
+    --json) json=1 ;;
+    -*) die "opção desconhecida '$1' (uso: orq prs [slug] [--todas] [--json])" ;;
+    *) [ -z "$slug" ] || die "uso: orq prs [slug] [--todas] [--json]"; slug="$1" ;;
+  esac
+  shift
+done
+[ -z "$slug" ] || [ -d "$ESTADO/$slug" ] || die "demanda '$slug' não existe (veja: orq status)"
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+# --- demandas e referências -------------------------------------------------
+
+URL_RE='https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+'
+: > "$T/demandas.jsonl"
+for d in "$ESTADO"/*/; do
+  [ -f "$d/estado" ] || continue
+  s="$(basename "$d")"; fase="$(head -n1 "$d/estado")"
+  if [ -n "$slug" ]; then [ "$s" = "$slug" ] || continue
+  else [ -f "$d/prs" ] || continue; [ -n "$todas" ] || [ "$fase" != concluida ] || continue; fi
+  prs="$(cat "$d/prs" 2>/dev/null || true)"
+  urls="$(echo "$prs" | grep -oE "$URL_RE" || true)"
+  # "#N" citados no texto que não são o número de nenhuma URL da demanda
+  nums_url="$(echo "$urls" | sed -n 's|.*/pull/||p' | sort -u)"
+  ignoradas="$(echo "$prs" | sed -E "s#$URL_RE##g" | { grep -oE '#[0-9]+' || true; } | tr -d '#' | sort -un \
+    | while read -r n; do echo "$nums_url" | grep -qx "$n" || echo "$n"; done)"
+  jq -nc --arg slug "$s" --arg fase "$fase" --arg urls "$urls" --arg ign "$ignoradas" '{
+    slug: $slug, fase: $fase,
+    refs: ($urls | split("\n") | map(select(length > 0) | capture("github\\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<n>[0-9]+)")
+           | {owner, repo, number: (.n | tonumber)})
+           | reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end)),   # sem duplicatas, na ordem do arquivo
+    ignoradas: ($ign | split("\n") | map(select(length > 0) | tonumber))
+  }' >> "$T/demandas.jsonl"
+done
+jq -s 'sort_by(.slug)' "$T/demandas.jsonl" > "$T/demandas.json"
+[ "$(jq length "$T/demandas.json")" -gt 0 ] || { echo "nenhuma demanda com PRs (concluídas só com --todas)"; exit 0; }
+
+# --- busca no GitHub, um repo por chamada, em paralelo -----------------------
+
+repos="$(jq -r '[.[].refs[] | "\(.owner)/\(.repo)"] | unique[]' "$T/demandas.json")"
+i=0
+for r in $repos; do
+  i=$((i + 1))
+  nums="$(jq -r --arg r "$r" '[.[].refs[] | select("\(.owner)/\(.repo)" == $r) | .number] | unique[]' "$T/demandas.json")"
+  # shellcheck disable=SC2086
+  ( buscar_repo "${r%%/*}" "${r##*/}" $nums > "$T/repo.$i.json" 2>"$T/repo.$i.err" || echo "falhou" > "$T/repo.$i.falha"
+    echo "$r" > "$T/repo.$i.nome" ) &
+done
+wait
+
+echo '{}' > "$T/dados.json"; echo '{}' > "$T/falhas.json"
+for f in "$T"/repo.*.nome; do
+  [ -f "$f" ] || continue
+  b="${f%.nome}"; r="$(cat "$f")"
+  if [ -f "$b.falha" ]; then
+    jq --arg r "$r" --arg m "$(tail -n1 "$b.err" 2>/dev/null)" '. + {($r): $m}' "$T/falhas.json" > "$T/x" && mv "$T/x" "$T/falhas.json"
+  else
+    jq --arg r "$r" --slurpfile d "$b.json" '. + {($r): $d[0]}' "$T/dados.json" > "$T/x" && mv "$T/x" "$T/dados.json"
+  fi
+done
+
+# UNKNOWN em PR aberto: o GitHub ainda está calculando; re-consulta só esses, até 2x
+for tentativa in 1 2; do
+  pend="$(jq -r 'to_entries[] | .key as $r | .value | to_entries[] | .value
+    | select(. != null and .state == "OPEN" and (.mergeable == "UNKNOWN" or .mergeStateStatus == "UNKNOWN"))
+    | "\($r) \(.number)"' "$T/dados.json")"
+  [ -n "$pend" ] || break
+  sleep "$ESPERA_UNKNOWN"
+  for r in $(echo "$pend" | awk '{print $1}' | sort -u); do
+    nums="$(echo "$pend" | awk -v r="$r" '$1==r {print $2}')"
+    # shellcheck disable=SC2086
+    novo="$(gql "$(consulta "${r%%/*}" "${r##*/}" "$CAMPOS_LEVES" $nums)" 2>/dev/null)" || continue
+    jq --arg r "$r" --argjson n "$(echo "$novo" | jq -c '.data.r')" \
+      '.[$r] |= with_entries(.key as $k | if $n[$k] then .value += $n[$k] else . end)' "$T/dados.json" > "$T/x" \
+      && mv "$T/x" "$T/dados.json"
+  done
+done
+
+# --- topologia (checkout local) ---------------------------------------------
+
+echo '{}' > "$T/topo.json"
+for r in $repos; do
+  nome="${r##*/}"; arq="$RAIZ/$nome/.claude/flow/topology.json"
+  if [ -f "$arq" ] && jq -e . "$arq" >/dev/null 2>&1; then
+    jq --arg n "$nome" --slurpfile t "$arq" '. + {($n): ($t[0] | {hml, prod, migracao_automatica, migracao_paths, migracao_cmd})}' \
+      "$T/topo.json" > "$T/x"
+  else
+    jq --arg n "$nome" '. + {($n): null}' "$T/topo.json" > "$T/x"
+  fi
+  mv "$T/x" "$T/topo.json"
+done
+
+# --- relatório --------------------------------------------------------------
+
+[ -f "$CACHE" ] && jq -e . "$CACHE" >/dev/null 2>&1 && cp "$CACHE" "$T/cache.json" || echo null > "$T/cache.json"
+jq -n --slurpfile dem "$T/demandas.json" --slurpfile dados "$T/dados.json" --slurpfile falhas "$T/falhas.json" \
+  --slurpfile topo "$T/topo.json" --slurpfile cache "$T/cache.json" --argjson agora "$(date +%s)" \
+  '{agora: $agora, demandas: $dem[0], dados: $dados[0], falhas: $falhas[0], topo: $topo[0], cache: $cache[0]}' > "$T/entrada.json"
+
+if [ -n "$json" ]; then
+  jq -L "$AQUI" 'include "orq-prs"; analisar' "$T/entrada.json"
+  exit 0
+fi
+jq -r -L "$AQUI" 'include "orq-prs"; analisar | markdown' "$T/entrada.json"
+# cache só numa execução completa: com slug ou repo que falhou, o "desde" não avança, senão
+# a próxima execução perderia o que mudou nas demandas/repos que esta não viu
+if [ -z "$slug" ] && [ "$(jq length "$T/falhas.json")" = 0 ]; then
+  jq -L "$AQUI" 'include "orq-prs"; analisar | .cacheNovo' "$T/entrada.json" > "$T/cache.novo" \
+    && mv "$T/cache.novo" "$CACHE"
+fi

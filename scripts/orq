@@ -477,6 +477,8 @@ orq — orquestrador de demandas via herdr   (raiz: $RAIZ, papel: $PAPEL)
   orq ler <agente> [linhas]           lê a tela recente do agente
   orq teclas <agente> <tecla>...      envia teclas (só com decisão do usuário)
   orq status [slug]                   fases e estado vivo dos agentes
+  orq prs [slug] [--todas] [--json]   PRs das demandas no GitHub: merge, conflito, eventos,
+                                      alertas e próximo passo (só lê; dispensa o herdr)
   orq esperar [slug] [--max seg]      bloqueia até um evento relevante
   orq reviver <slug> [repo]           sobe de novo um agente morto
   orq rotular [slug]                  reaplica rótulos dos agentes vivos no herdr
@@ -485,12 +487,14 @@ EOF
 }
 
 main() {
-  [ "${HERDR_ENV:-}" = 1 ] || [ -n "${ORQ_HERDR:-}" ] || die "não estou dentro do herdr (HERDR_ENV != 1)"
+  local sub="${1:-ajuda}"; shift || true
+  # `prs` só lê arquivos e o GitHub: roda de qualquer terminal, sem herdr
+  [ "$sub" = prs ] || [ "${HERDR_ENV:-}" = 1 ] || [ -n "${ORQ_HERDR:-}" ] || die "não estou dentro do herdr (HERDR_ENV != 1)"
   command -v jq >/dev/null || die "precisa do jq"
   RAIZ="$(achar_raiz)"
   ESTADO="${ORQ_ESTADO:-$RAIZ/.orquestra/demandas}"
-  local sub="${1:-ajuda}"; shift || true
   case "$sub" in
+    prs) ORQ_RAIZ="$RAIZ" ORQ_ESTADO="$ESTADO" exec "$ORQ_HOME/scripts/orq-prs" "$@" ;;
     nova|estado|dev|falar|ler|teclas|status|esperar|reviver|rotular|fechar) "cmd_$sub" "$@" ;;
     ajuda|-h|--help) ajuda ;;
     *) die "comando desconhecido '$sub' (orq ajuda)" ;;

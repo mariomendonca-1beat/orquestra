@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# gh falso para os testes do `orq prs`. Só entende `gh api graphql -f query=...` no formato do
+# orq-prs: um repository(owner, name) com aliases pN: pullRequest(number: N).
+#   $GH_FIXTURES/<repo>.json — {"<n>": nó do PR}; um nó com "_leve": [..] responde a k-ésima
+#                              consulta leve (sem comentários) com _leve[k-1] (ou o último)
+#   $STUB_DIR/gh-calls       — uma linha por chamada: "<repo> leve|completa <n>..."
+#   STUB_GH_FALHAS=N         — as N primeiras chamadas falham com HTTP 502
+#   STUB_GH_FALHA_REPO=r     — toda chamada ao repo r falha com HTTP 502
+set -euo pipefail
+D="${STUB_DIR:?}"
+q=""
+for a in "$@"; do case "$a" in query=*) q="${a#query=}" ;; esac; done
+q="$(echo "$q" | tr "\n" " ")"
+[ "$1 $2" = "api graphql" ] && [ -n "$q" ] || { echo "gh-stub: chamada inesperada: $*" >&2; exit 2; }
+
+repo="$(echo "$q" | sed -E 's/.*repository\(owner:"[^"]*", name:"([^"]*)"\).*/\1/')"
+nums="$(echo "$q" | grep -oE 'p[0-9]+: pullRequest' | sed -E 's/p([0-9]+):.*/\1/' | tr '\n' ' ')"
+tipo=completa; echo "$q" | grep -q 'comments' || tipo=leve
+echo "$repo $tipo $nums" >> "$D/gh-calls"
+
+n=$(( $(cat "$D/gh-seq" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$D/gh-seq"
+if [ "$n" -le "${STUB_GH_FALHAS:-0}" ] || [ "$repo" = "${STUB_GH_FALHA_REPO:-}" ]; then
+  echo "HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2; exit 1
+fi
+
+k=0
+if [ "$tipo" = leve ]; then
+  k=$(( $(cat "$D/gh-leve-$repo" 2>/dev/null || echo 0) + 1 )); echo "$k" > "$D/gh-leve-$repo"
+fi
+jq -c --arg nums "$nums" --argjson k "$k" '
+  . as $f | {data: {r: ($nums | split(" ") | map(select(length > 0)) | map({key: "p\(.)", value:
+    ($f[.] | if . == null then null
+             elif $k > 0 and ._leve then (._leve[[$k - 1, (._leve | length) - 1] | min] as $l | del(._leve) + $l)
+             else del(._leve) end)}) | from_entries)}}' "$GH_FIXTURES/$repo.json"

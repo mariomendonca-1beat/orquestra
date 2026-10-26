@@ -17,7 +17,8 @@ plugin `jaguar-plus`.
 claude --plugin-dir <raiz>/.orquestra     # e então: /orquestra:orquestrador
 ```
 
-Comandos da mecânica: `scripts/orq ajuda`. Demandas criadas antes dos rótulos atuais:
+Comandos da mecânica: `scripts/orq ajuda`. Status dos PRs das demandas (merge, conflito, eventos do flow,
+alertas): `scripts/orq prs`, ou `/orquestra:demandas-prs`; só lê e dispensa o herdr. Demandas criadas antes dos rótulos atuais:
 `scripts/orq rotular` reaplica os nomes na lista de agentes do herdr. Testes: `bash tests/run.sh`.
 Design completo: `docs/specs/2026-10-09-orquestrador-design.md`.
 
