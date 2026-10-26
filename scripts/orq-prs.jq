@@ -59,7 +59,11 @@ def analisar_repo($prs; $topo):
         ( if $p.conflito then {pr: $p, tipo: "conflito", msg: "em conflito com `\($p.base)`"} else empty end ),
         ( if $p.papel == "PRD" and $p.state == "MERGED" and ($stg | length) > 0
              and ([$stg[] | select(.state == "MERGED" and .mergedAt <= $p.mergedAt)] | length) == 0
-          then {pr: $p, tipo: "ordem", msg: "ordem quebrada: PRD merjado antes de qualquer STG do repo (E-011)"} else empty end ),
+          then ($stgM != null) as $depois
+               | {pr: $p, tipo: (if $depois then "ordem-tardia" else "ordem" end),
+                  msg: ("ordem quebrada: PRD merjado antes de qualquer STG do repo (E-011)"
+                        + (if $depois then "; o STG entrou depois (\($stgM | quando))" else "" end))}
+          else empty end ),
         ( if $p.state == "MERGED" and $p.tocaMigracao and ($p.papel == "STG" or $p.papel == "PRD") then
             (if $p.papel == "STG" then "deploy_hml" else "deploy_prod" end) as $ev
             | (if $p.papel == "STG" then $cmd.hml else $cmd.prod end) as $c
@@ -91,7 +95,7 @@ def analisar_repo($prs; $topo):
         elif ([$alertas[] | select(.tipo == "conflito")] | length) > 0 then
           "resolver o conflito de \([$alertas[] | select(.tipo == "conflito") | .pr] | lista)"
         elif ([$alertas[] | select(.tipo == "ordem")] | length) > 0 then
-          "ordem quebrada em \([$alertas[] | select(.tipo == "ordem") | .pr] | lista): refazer o STG (E-011)"
+          "ordem quebrada em \([$alertas[] | select(.tipo == "ordem") | .pr] | lista): merjar o STG\(if ($stgA | length) > 0 then " " + ($stgA | lista) else "" end) e conferir o ambiente de HML (E-011)"
         elif ($deploys | length) > 0 then
           "aplicar a migração: " + ([$deploys[] | "\(.cmd // "aplicar e registrar o `deploy_\(.amb | if . == "STG" then "hml" else "prod" end)`") (#\(.pr.number))"] | join(", "))
         elif ($stgA | length) > 0 then

@@ -34,6 +34,8 @@ def bot: {createdAt: t(25), author: {login: "github-actions", __typename: "Bot"}
   "jaguar-plus": {
     "20": pr(20; "staging"; "MERGED"; t(20); null; ["db/a.sql"]; [ev("deploy_hml"; t(21))]),
     "21": pr(21; "production"; "MERGED"; t(19); null; ["db/a.sql"]; [ev("deploy_prod"; t(21))]),
+    "22": pr(22; "production"; "MERGED"; t(19); null; []; []),
+    "23": pr(23; "staging"; "OPEN"; null; "BLOCKED"; []; []),
     "30": pr(30; "staging"; "MERGED"; t(20); null; ["db/fn/x.sql", "README.md"]; [ev("deploy_hml"; t(19))]),
     "31": pr(31; "production"; "OPEN"; null; "BLOCKED"; ["db/fn/x.sql"]; []),
     "32": pr(32; "staging"; "MERGED"; t(20); null; ["y.sql"]; [ev("deploy_hml"; t(21)), ev("validado"; t(22))]),
