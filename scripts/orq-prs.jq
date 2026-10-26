@@ -54,10 +54,11 @@ def analisar_repo($prs; $topo):
   | ($rev != null and ($apr == null or $rev > $apr)
      and ($rev > ([ultimo($evs; "selfreview")] | map(select(. != null)) | maximo // 0))) as $rodada
   | ($topo.migracao_cmd // {}) as $cmd
+  | ($topo != null and $topo.hml == null) as $unico   # ambiente único: só produção, sem STG
   | [ $prs[] as $p
       | ( if $p.erro then {pr: $p, tipo: "erro", msg: "PR não encontrado no GitHub"} else empty end ),
         ( if $p.conflito then {pr: $p, tipo: "conflito", msg: "em conflito com `\($p.base)`"} else empty end ),
-        ( if $p.papel == "PRD" and $p.state == "MERGED" and ($stg | length) == 0
+        ( if $p.papel == "PRD" and $p.state == "MERGED" and ($stg | length) == 0 and ($unico | not)
           then {pr: $p, tipo: "ordem-sem-stg", msg: "PRD merjado e nenhum STG do repo listado na demanda: ordem não verificada"}
           else empty end ),
         ( if $p.papel == "PRD" and $p.state == "MERGED" and ($stg | length) > 0
@@ -105,6 +106,11 @@ def analisar_repo($prs; $topo):
           if $aprovado then "STG \($stgA | lista) aprovado: merjar"
           elif $rodada then "STG \($stgA | lista): rodada de review a tratar"
           else "STG \($stgA | lista) aguarda review/merge" end
+        elif ($prd | length) == 0 and $stgM != null then
+          if $validado then "STG merjado e validado, mas nenhum PRD vivo listado na demanda: abrir o PRD ou regravar o `prs`"
+          else "validar em HML e registrar `flow validado`; nenhum PRD vivo listado na demanda" end
+        elif ($prdA | length) > 0 and $unico then
+          "PRD \($prdA | lista) aguarda review/merge"
         elif ($prdA | length) > 0 and $stgM == null then
           "PRD \($prdA | lista) aberto, sem STG merjado listado na demanda"
         elif ($prdA | length) > 0 and ($validado | not) then

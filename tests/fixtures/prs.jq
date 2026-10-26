@@ -28,6 +28,8 @@ def bot: {createdAt: t(25), author: {login: "github-actions", __typename: "Bot"}
     "60": (pr(60; "staging"; "OPEN"; null; "UNKNOWN"; []; [])
            + {_leve: [{mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN"}]}),
     "61": pr(61; "staging"; "OPEN"; null; "BEHIND"; []; [ev("aprovado"; t(21))]),
+    "62": pr(62; "staging"; "MERGED"; t(20); null; []; []),
+    "63": pr(63; "master"; "CLOSED"; null; null; []; []),
     "80": pr(80; "staging"; "MERGED"; t(10); null; []; []),
     "90": pr(90; "staging"; "MERGED"; t(20); null; []; []),
     "91": pr(91; "master"; "MERGED"; t(22); null; []; [ev("validado"; t(21))])
@@ -42,6 +44,10 @@ def bot: {createdAt: t(25), author: {login: "github-actions", __typename: "Bot"}
     "31": pr(31; "production"; "OPEN"; null; "BLOCKED"; ["db/fn/x.sql"]; []),
     "32": pr(32; "staging"; "MERGED"; t(20); null; ["y.sql"]; [ev("deploy_hml"; t(21)), ev("validado"; t(22))]),
     "33": pr(33; "production"; "MERGED"; t(23); null; ["y.sql"]; [ev("deploy_prod"; t(22))])
+  },
+  "unico": {
+    "1": pr(1; "main"; "MERGED"; t(20); null; []; []),
+    "2": pr(2; "main"; "OPEN"; null; "CLEAN"; []; [])
   },
   "outro": {
     "70": pr(70; "main"; "OPEN"; null; "CLEAN"; []; [])

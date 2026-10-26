@@ -168,8 +168,9 @@ igual "não responde o auto mode (nenhuma tecla enviada)" "$(grep -c "send-keys"
 echo "prs"
 EP="$T/estado-prs"; FX="$T/fixtures"; mkdir -p "$EP" "$FX"
 export GH_FIXTURES="$FX"
-for r in jaguar-plus jaguar-beta outro; do jq -n -f "$AQUI/fixtures/prs.jq" | jq --arg r "$r" '.[$r]' > "$FX/$r.json"; done
-mkdir -p "$ORQ_RAIZ/jaguar-plus/.claude/flow" "$ORQ_RAIZ/jaguar-beta/.claude/flow"
+for r in jaguar-plus jaguar-beta outro unico; do jq -n -f "$AQUI/fixtures/prs.jq" | jq --arg r "$r" '.[$r]' > "$FX/$r.json"; done
+mkdir -p "$ORQ_RAIZ/jaguar-plus/.claude/flow" "$ORQ_RAIZ/jaguar-beta/.claude/flow" "$ORQ_RAIZ/unico/.claude/flow"
+echo '{"hml":null,"prod":"main","migracao_automatica":true,"migracao_paths":[]}' > "$ORQ_RAIZ/unico/.claude/flow/topology.json"
 echo '{"hml":"staging","prod":"production","migracao_automatica":false,"migracao_paths":["*.sql"],
   "migracao_cmd":{"hml":"/deploy staging","prod":"/deploy production"}}' > "$ORQ_RAIZ/jaguar-plus/.claude/flow/topology.json"
 echo '{"hml":"staging","prod":"master","migracao_automatica":true,"migracao_paths":[]}' > "$ORQ_RAIZ/jaguar-beta/.claude/flow/topology.json"
@@ -181,6 +182,8 @@ dem d-ordem pr-aberto "$P/20" "$P/21"
 dem d-ordem2 pr-aberto "$P/22" "$P/23"
 dem d-semstg pr-aberto "$P/24"
 dem d-behind pr-aberto "$B/61"
+dem d-semprd pr-aberto "$B/62" "$B/63 (PROD fechado)"
+dem d-unico pr-aberto "https://github.com/onebeatco/unico/pull/1" "https://github.com/onebeatco/unico/pull/2"
 dem d-deploy pr-aberto "$P/30" "$P/31"
 dem d-semval pr-aberto "$B/40" "$B/41" "$B/42"
 dem d-prod pr-aberto "$P/32" "$P/33"
@@ -194,7 +197,7 @@ prs() { env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EP" ORQ_PRS_ESPERAS="0 0" ORQ
   ORQ_GH="$AQUI/gh-stub" "$ORQ" prs "$@"; }
 rm -f "$STUB_DIR"/gh-*
 out="$(prs 2>&1)" && ok "prs roda fora do herdr" || nok "prs fora do herdr: $out"
-igual "uma chamada completa por repo" "$(grep -c completa "$STUB_DIR/gh-calls")" 3
+igual "uma chamada completa por repo" "$(grep -c completa "$STUB_DIR/gh-calls")" 4
 igual "UNKNOWN re-consulta só os abertos UNKNOWN" "$(grep leve "$STUB_DIR/gh-calls" | sort -u | tr '\n' '|')" "jaguar-beta leve 51 60 |jaguar-beta leve 60 |"
 tem() { echo "$out" | grep -qF -- "$2" && ok "$1" || nok "$1 — não achei: $2"; }
 nao() { echo "$out" | grep -qF -- "$2" && nok "$1 — achei: $2" || ok "$1"; }
@@ -204,6 +207,9 @@ tem "ordem quebrada já remediada" "⚠ jaguar-plus#21: ordem quebrada: PRD merj
 tem "remediada não bloqueia o passo" "pode fechar: \`orq fechar d-ordem\`"
 tem "PRD merjado sem STG listado" "⚠ jaguar-plus#24: PRD merjado e nenhum STG do repo listado na demanda: ordem não verificada"
 tem "STG aprovado mas BEHIND tem passo" "→ Próximo: jaguar-beta: STG #61 aprovado: merjar"
+tem "STG merjado sem PRD vivo não é 'pode fechar'" "→ Próximo: jaguar-beta: validar em HML e registrar \`flow validado\`; nenhum PRD vivo listado na demanda"
+nao "ambiente único sem alerta de STG" "unico#1: PRD merjado e nenhum STG"
+tem "ambiente único: PRD aberto aguarda review" "→ Próximo: unico: PRD #2 aguarda review/merge"
 tem "ordem quebrada pendente" "→ Próximo: jaguar-plus: ordem quebrada em #22: merjar o STG #23 e conferir o ambiente de HML (E-011)"
 tem "sql merjado com deploy_hml anterior ao merge alerta" "⚠ jaguar-plus#30: merjado sem \`deploy_hml\`: migração não registrada como aplicada (\`/deploy staging\`)"
 tem "passo do deploy" "→ Próximo: jaguar-plus: aplicar a migração: /deploy staging (#30)"
@@ -221,7 +227,7 @@ tem "tudo merjado" "pode fechar: \`orq fechar d-refs\`"
 igual "PR repetido no arquivo aparece uma vez" "$(echo "$out" | grep -c '\[#91\]')" 1
 nao "concluída fica fora" "## d-feita"
 nao "demanda sem prs fica fora" "## d-semprs"
-tem "resumo" "**Agora:** 12 demanda(s) · 21 PRs · 12 merjados · 1 pronto(s) para merge · 1 com conflito · 2 alerta(s) de deploy"
+tem "resumo" "**Agora:** 14 demanda(s) · 25 PRs · 14 merjados · 1 pronto(s) para merge · 1 com conflito · 2 alerta(s) de deploy"
 tem "primeira execução" "sem execução anterior"
 out="$(prs --todas 2>&1)"; tem "--todas inclui concluída" "## d-feita — concluida"
 out="$(prs d-semprs 2>&1)"; tem "slug sem prs" "Sem PRs com URL"
@@ -230,7 +236,7 @@ jq '."11".state = "MERGED" | ."11".mergedAt = "2099-01-01T00:00:00Z" | ."11".mer
 cp "$EP/.prs-ultimo.json" "$T/cache-antes"
 out="$(prs --json 2>&1)"
 cmp -s "$EP/.prs-ultimo.json" "$T/cache-antes" && ok "--json não grava cache" || nok "--json gravou cache"
-echo "$out" | jq -e '.demandas | length == 12' >/dev/null && ok "--json é JSON" || nok "--json: $out"
+echo "$out" | jq -e '.demandas | length == 14' >/dev/null && ok "--json é JSON" || nok "--json: $out"
 cp "$EP/.prs-ultimo.json" "$T/cache-antes"
 out="$(prs d-ordem 2>&1)"
 cmp -s "$EP/.prs-ultimo.json" "$T/cache-antes" && ok "execução com slug não avança o cache" || nok "slug gravou cache"
