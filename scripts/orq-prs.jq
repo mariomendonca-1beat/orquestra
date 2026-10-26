@@ -57,6 +57,9 @@ def analisar_repo($prs; $topo):
   | [ $prs[] as $p
       | ( if $p.erro then {pr: $p, tipo: "erro", msg: "PR não encontrado no GitHub"} else empty end ),
         ( if $p.conflito then {pr: $p, tipo: "conflito", msg: "em conflito com `\($p.base)`"} else empty end ),
+        ( if $p.papel == "PRD" and $p.state == "MERGED" and ($stg | length) == 0
+          then {pr: $p, tipo: "ordem-sem-stg", msg: "PRD merjado e nenhum STG do repo listado na demanda: ordem não verificada"}
+          else empty end ),
         ( if $p.papel == "PRD" and $p.state == "MERGED" and ($stg | length) > 0
              and ([$stg[] | select(.state == "MERGED" and .mergedAt <= $p.mergedAt)] | length) == 0
           then ($stgM != null) as $depois
@@ -85,8 +88,8 @@ def analisar_repo($prs; $topo):
   | ([$stg[] | select(.state == "OPEN")]) as $stgA
   | ([$prd[] | select(.state == "OPEN")]) as $prdA
   | { eventos: $evs, alertas: $alertas, ultimoEvento: ($evs | last),
-      prontos: ( [ $stgA[] | select((.conflito | not) and $aprovado) ]
-               + [ $prdA[] | select((.conflito | not) and $validado
+      prontos: ( [ $stgA[] | select(.mss | IN("CLEAN", "HAS_HOOKS", "BLOCKED")) | select($aprovado) ]
+               + [ $prdA[] | select(.mss | IN("CLEAN", "HAS_HOOKS", "BLOCKED")) | select($validado
                      and ([$deploys[] | select(.amb == "STG")] | length) == 0) ] ),
       passo: (
         if $topo == null then

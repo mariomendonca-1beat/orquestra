@@ -165,6 +165,9 @@ if [ -n "$json" ]; then
   exit 0
 fi
 jq -r -L "$AQUI" 'include "orq-prs"; analisar | markdown' "$T/entrada.json"
-# cache só quando o relatório inteiro veio (repo que falhou não apaga o que se sabia dele)
-jq -L "$AQUI" 'include "orq-prs"; analisar | .cacheNovo' "$T/entrada.json" > "$T/cache.novo" \
-  && mv "$T/cache.novo" "$CACHE"
+# cache só numa execução completa: com slug ou repo que falhou, o "desde" não avança, senão
+# a próxima execução perderia o que mudou nas demandas/repos que esta não viu
+if [ -z "$slug" ] && [ "$(jq length "$T/falhas.json")" = 0 ]; then
+  jq -L "$AQUI" 'include "orq-prs"; analisar | .cacheNovo' "$T/entrada.json" > "$T/cache.novo" \
+    && mv "$T/cache.novo" "$CACHE"
+fi

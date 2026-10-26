@@ -27,6 +27,7 @@ def bot: {createdAt: t(25), author: {login: "github-actions", __typename: "Bot"}
            + {_leve: [{mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED"}]}),
     "60": (pr(60; "staging"; "OPEN"; null; "UNKNOWN"; []; [])
            + {_leve: [{mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN"}]}),
+    "61": pr(61; "staging"; "OPEN"; null; "BEHIND"; []; [ev("aprovado"; t(21))]),
     "80": pr(80; "staging"; "MERGED"; t(10); null; []; []),
     "90": pr(90; "staging"; "MERGED"; t(20); null; []; []),
     "91": pr(91; "master"; "MERGED"; t(22); null; []; [ev("validado"; t(21))])
@@ -36,6 +37,7 @@ def bot: {createdAt: t(25), author: {login: "github-actions", __typename: "Bot"}
     "21": pr(21; "production"; "MERGED"; t(19); null; ["db/a.sql"]; [ev("deploy_prod"; t(21))]),
     "22": pr(22; "production"; "MERGED"; t(19); null; []; []),
     "23": pr(23; "staging"; "OPEN"; null; "BLOCKED"; []; []),
+    "24": pr(24; "production"; "MERGED"; t(19); null; []; []),
     "30": pr(30; "staging"; "MERGED"; t(20); null; ["db/fn/x.sql", "README.md"]; [ev("deploy_hml"; t(19))]),
     "31": pr(31; "production"; "OPEN"; null; "BLOCKED"; ["db/fn/x.sql"]; []),
     "32": pr(32; "staging"; "MERGED"; t(20); null; ["y.sql"]; [ev("deploy_hml"; t(21)), ev("validado"; t(22))]),
