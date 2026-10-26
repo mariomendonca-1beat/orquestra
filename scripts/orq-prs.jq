@@ -21,7 +21,7 @@ def eventos($n):
         at: ((try (.at | ts) catch null) // ($c.createdAt | ts)) } ];
 
 def normalizar($owner; $repo; $n; $topo):
-  if . == null then {owner: $owner, repo: $repo, number: $n, erro: "não encontrado", eventos: []}
+  if . == null then {owner: $owner, repo: $repo, number: $n, erro: "não encontrado", papel: "?", eventos: []}
   else . as $p | {
     owner: $owner, repo: $repo, number: $n, url, title, state, draft: .isDraft,
     base: .baseRefName, mergedAt: (.mergedAt | ts), mergedBy: .mergedBy.login,
@@ -32,6 +32,7 @@ def normalizar($owner; $repo; $n; $topo):
     tocaMigracao: ($topo != null and $topo.migracao_automatica == false
       and ([$p.files.nodes[]?.path] as $ps | any(($topo.migracao_paths // [])[] | glob_re; . as $re | any($ps[]; test($re))))),
     truncado: ((.comments.totalCount // 0) > (.comments.nodes // [] | length)),
+    arquivosTruncados: ((.files.totalCount // 0) > (.files.nodes // [] | length)),
     eventos: eventos($n) }
   end;
 
@@ -83,7 +84,9 @@ def analisar_repo($prs; $topo):
           then {pr: $p, tipo: "info", msg: "validação pulada: PRD merjado sem `validado` posterior ao merge do STG"} else empty end ),
         ( if ($p.papel | startswith("base ")) and $p.state != "CLOSED"
           then {pr: $p, tipo: "base", msg: "base `\($p.base)` não é a de HML nem a de PROD da topologia"} else empty end ),
-        ( if $p.truncado then {pr: $p, tipo: "info", msg: "mais de 60 comentários: eventos antigos não lidos"} else empty end )
+        ( if $p.truncado then {pr: $p, tipo: "info", msg: "mais de 60 comentários: eventos antigos não lidos"} else empty end ),
+        ( if $p.arquivosTruncados and $topo != null and $topo.migracao_automatica == false
+          then {pr: $p, tipo: "info", msg: "mais de 100 arquivos: migração fora dos 100 primeiros não é detectada"} else empty end )
     ] as $alertas
   | ([$alertas[] | select(.tipo == "deploy")]) as $deploys
   | ([$stg[] | select(.state == "OPEN")]) as $stgA
@@ -155,7 +158,7 @@ def analisar:
               (if $c.conflito and ($p.conflito | not) and $p.state == "OPEN" then {at: $in.agora, txt: "\(rotulo) saiu do conflito"} else empty end) ]
         | unique_by(.txt) | sort_by(.at) | map(.txt)) end),
       cacheNovo: { em: $in.agora,
-        prs: (($in.cache.prs // {}) + ($unicos | map({key: "\(.owner)/\(rotulo)", value: {state, conflito}}) | from_entries)) } };
+        prs: (($in.cache.prs // {}) + ($unicos | map({key: "\(.owner)/\(rotulo)", value: {state, mergedAt, mss, conflito, ultimoEvento: (.eventos | sort_by(.at) | last | if . then {type, at} else null end)}}) | from_entries)) } };
 
 # --- markdown ---------------------------------------------------------------
 

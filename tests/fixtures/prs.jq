@@ -30,6 +30,7 @@ def bot: {createdAt: t(25), author: {login: "github-actions", __typename: "Bot"}
     "61": pr(61; "staging"; "OPEN"; null; "BEHIND"; []; [ev("aprovado"; t(21))]),
     "62": pr(62; "staging"; "MERGED"; t(20); null; []; []),
     "63": pr(63; "master"; "CLOSED"; null; null; []; []),
+    "64": (pr(64; "staging"; "MERGED"; t(20); null; []; []) | .files.totalCount = 150),
     "80": pr(80; "staging"; "MERGED"; t(10); null; []; []),
     "90": pr(90; "staging"; "MERGED"; t(20); null; []; []),
     "91": pr(91; "master"; "MERGED"; t(22); null; []; [ev("validado"; t(21))])
@@ -42,6 +43,7 @@ def bot: {createdAt: t(25), author: {login: "github-actions", __typename: "Bot"}
     "24": pr(24; "production"; "MERGED"; t(19); null; []; []),
     "30": pr(30; "staging"; "MERGED"; t(20); null; ["db/fn/x.sql", "README.md"]; [ev("deploy_hml"; t(19))]),
     "31": pr(31; "production"; "OPEN"; null; "BLOCKED"; ["db/fn/x.sql"]; []),
+    "34": (pr(34; "staging"; "MERGED"; t(20); null; ["a.sql"]; [ev("deploy_hml"; t(21))]) | .files.totalCount = 150),
     "32": pr(32; "staging"; "MERGED"; t(20); null; ["y.sql"]; [ev("deploy_hml"; t(21)), ev("validado"; t(22))]),
     "33": pr(33; "production"; "MERGED"; t(23); null; ["y.sql"]; [ev("deploy_prod"; t(22))])
   },
