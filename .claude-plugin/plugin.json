@@ -6,6 +6,7 @@
     "name": "Onebeat"
   },
   "skills": [
-    "./skills/orquestrador"
+    "./skills/orquestrador",
+    "./skills/demandas-prs"
   ]
 }
