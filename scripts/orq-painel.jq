@@ -56,8 +56,9 @@ def fase_nome: {"nova": "nova", "investigando": "investigando", "spec-pronto": "
   "concluida": "concluída"}[.] // .;
 
 def quem_passo:
-  if test("rodada de review a tratar") then "líder"
-  elif test("aguarda review|repo sem topologia") then "revisor"
+  if test("rodada de review a tratar|abrir o PRD|regravar") then "líder"
+  elif test("repo sem topologia") then "?"
+  elif test("aguarda review") then "revisor"
   else "você" end;
 
 def links_locais:
@@ -67,7 +68,12 @@ def links_locais:
 
 def modelo($c):
   . as $l
-  | (if $l.fase == "concluida" then null else $c[$l.slug] end) as $p   # concluída: só dados locais
+  | ($l.prs | links_locais | map([.repo, .number]) | sort) as $locais
+  # concluída: só dados locais; links regravados depois da leitura: a leitura não vale mais
+  | (if $l.fase == "concluida" then null
+     elif $c[$l.slug] != null and ($locais | length) > 0
+          and ([$c[$l.slug].analise.prs[] | [.repo, .number]] | unique | sort) != ($locais | unique)
+     then null else $c[$l.slug] end) as $p
   # nota de várias linhas (os links do pr-aberto) continua na entrada anterior
   | ($l.historico | split("\n")
      | reduce .[] as $x ([]; if ($x | test("^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}( |$)"))
@@ -157,7 +163,7 @@ def chip_quem: if . == null then "" else "<span class=\"quem q-\(if . == "?" the
 def cls_fase: "f-" + (gsub("[^a-z-]"; ""));
 
 def busca:
-  [.slug, .oque, (.feito // ""), .fase, .proximo, (.prs[] | "\(.repo) #\(.number)"), (.arquivos[].caminhos[])] | join(" ") | ascii_downcase;
+  [.slug, .oque, (.feito // ""), .fase, .proximo, (.prs[] | "\(.repo) #\(.number)"), (.arquivos[].caminhos[])] | join(" ");
 
 def resumo_arquivos:
   [.arquivos[] | "\(.repo) \(.caminhos | length)\(if .truncado then "+" else "" end) arq."] | join(" · ");
@@ -178,7 +184,7 @@ def card:
 
 def js_busca: "const q=document.getElementById('q'),c=document.getElementById('concl');"
   + "q.addEventListener('input',()=>{const t=q.value.trim().toLowerCase();"
-  + "document.querySelectorAll('[data-busca]').forEach(x=>{x.hidden=!!t&&!x.dataset.busca.includes(t)});"
+  + "document.querySelectorAll('[data-busca]').forEach(x=>{x.hidden=!!t&&!x.dataset.busca.toLowerCase().includes(t)});"
   + "if(c)c.open=!!t||c.dataset.aberto==='1'});"
   + "if(c)c.addEventListener('toggle',()=>{if(!q.value.trim())c.dataset.aberto=c.open?'1':'0'});";
 

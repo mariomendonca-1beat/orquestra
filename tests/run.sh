@@ -302,9 +302,17 @@ env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-novo" ORQ_PRS_ESPERAS="0 0" ORQ_
 contem "repo em falha sem leitura anterior não finge leitura" "$T/ep-novo/d-semval/resumo.html" "sem leitura do GitHub"
 echo concluida > "$T/ep-novo/d-semval/estado"
 env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-novo" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
-echo pr-aberto > "$T/ep-novo/d-conflito/estado"; echo concluida > "$T/ep-novo/d-conflito/estado"
-env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-novo" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
-naocontem "concluída não usa leitura antiga do GitHub" "$T/ep-novo/d-conflito/resumo.html" "CONFLITO"
+cp -R "$EP" "$T/ep-concl"   # .painel-prs.json daqui tem d-conflito em CONFLITO
+grep -q CONFLITO "$T/ep-concl/d-conflito/resumo.html" && ok "pré-condição: leitura guardada tem o conflito" || nok "pré-condição do conflito"
+echo concluida > "$T/ep-concl/d-conflito/estado"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-concl" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
+naocontem "concluída não usa leitura antiga do GitHub" "$T/ep-concl/d-conflito/resumo.html" "CONFLITO"
+printf '%s\n' "https://github.com/onebeatco/jaguar-beta/pull/12" > "$T/ep-concl/d-semval/prs"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-concl" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
+contem "links regravados invalidam a leitura guardada" "$T/ep-concl/d-semval/resumo.html" "não lido do GitHub"
+echo '{"demandas":[1]}' > "$T/ep-concl/.painel-prs.json"; rm -f "$T/ep-concl/painel.html"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-concl" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
+[ -s "$T/ep-concl/painel.html" ] && ok "cache corrompido não trava o painel" || nok "cache corrompido travou o painel"
 out="$(STUB_GH_FALHA_REPO=jaguar-beta painel 2>&1)" || nok "painel com repo fora: $out"
 contem "aviso quando um repo não responde" "$I" "GitHub não respondeu para jaguar-beta"
 contem "demanda do repo fora mantém a leitura anterior" "$PV" "PRD aberto sem <code>validado</code>"

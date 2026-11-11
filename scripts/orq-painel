@@ -45,7 +45,7 @@ case "$modo" in
   local) echo '{"demandas":[]}' > "$T/nova.json" ;;
 esac
 jq -e . "$T/nova.json" >/dev/null 2>&1 || die "análise inválida em $analise"
-[ -f "$CACHE" ] && jq -e .demandas "$CACHE" >/dev/null 2>&1 && cp "$CACHE" "$T/cache.json" || echo '{"demandas":{}}' > "$T/cache.json"
+[ -f "$CACHE" ] && jq -e '.demandas | type == "object"' "$CACHE" >/dev/null 2>&1 && cp "$CACHE" "$T/cache.json" || echo '{"demandas":{}}' > "$T/cache.json"
 
 # por demanda: a análise nova vale se nenhum repo dela falhou; senão fica a anterior (se houver),
 # marcada como velha; demandas que saíram da análise (concluídas) mantêm a última leitura
