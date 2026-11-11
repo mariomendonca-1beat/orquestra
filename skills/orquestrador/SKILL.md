@@ -58,6 +58,8 @@ um novo gate.
 ## Outros pedidos do usuário
 
 - "como está X?" → `"$ORQ" status [slug]`, e `"$ORQ" ler` se precisar.
+- "o que era cada demanda?", "quero bater o olho" → `"$ORQ" painel --abrir` (índice em
+  `demandas/painel.html`, uma página por demanda em `demandas/<slug>/resumo.html`; lê o GitHub).
 - recado ao líder → `"$ORQ" falar lider-<slug> "<msg>"`. Ao dev, prefira passar pelo líder.
 - "o PR de X mudou de número" → `"$ORQ" estado <slug> pr-aberto "<links novos>"` (na fase
   `pr-aberto`, regrava os links).

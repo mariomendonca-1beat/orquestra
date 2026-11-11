@@ -34,12 +34,22 @@ repos irmãos (`jaguar-plus`, `jaguar-plus-frontend`, `jaguar-plus-ui`, `jaguar-
 6. Se tocar 2+ repos, escreva também `{{DEMANDA}}/contrato.md`, começando por `v1`:
    endpoints, payloads e tipos, chaves de i18n, componentes compartilhados, ordem de merge.
    É a fonte única de verdade entre os repos.
-7. `orq estado {{SLUG}} spec-pronto` e **pare**, respondendo só "spec pronto". O humano
+7. Escreva `{{DEMANDA}}/resumo.md` — é o que o humano lê no painel (`orq painel`) para
+   bater o olho e lembrar da demanda. Linguagem de negócio, sem jargão, sem citar arquivos
+   nem PRs (o painel já mostra):
+   ```markdown
+   ## O que é
+   <1 linha: o problema ou pedido, como o usuário diria>
+
+   ## O que foi feito
+   <2-3 linhas; nesta fase: "Nada no código ainda: <o que o spec propõe>">
+   ```
+8. `orq estado {{SLUG}} spec-pronto` e **pare**, respondendo só "spec pronto". O humano
    pode vir conversar direto aqui sobre o spec; discuta, ajuste os arquivos e, ao final,
    diga que está pronto de novo. A aprovação sempre chega pelo orquestrador.
 
 Se o feedback for de ajuste, a fase volta para `investigando` e o feedback é anexado ao
-`brief.md`: revise e volte ao passo 5.
+`brief.md`: revise e volte ao passo 5 (e atualize o `resumo.md`).
 
 ## Fase 2 — implementar (após receber `aprovado`)
 
@@ -148,6 +158,10 @@ depois disso exige rodada nova do `/sql-check` (e self-review novo, num subagent
    aprovação do Igor, ou "sem card").
 
 ## Fechamento
+
+Antes de tudo, atualize "O que foi feito" no `{{DEMANDA}}/resumo.md` com o que os PRs
+entregam para o usuário final (2-3 linhas). Volte a atualizar sempre que regravar os PRs ou
+que uma rodada de review mudar o que é entregue.
 
 `orq estado {{SLUG}} pr-aberto "<links de todos os PRs, um por linha>"` e responda com um
 resumo curto: PRs, ordem de merge, o veredito do self-review (do subagent) com o link do

@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# orq-painel — o `orq painel`: gera demandas/painel.html (índice) e demandas/<slug>/resumo.html
+# (uma página por demanda), autocontidos, a partir dos arquivos das demandas e da análise do
+# `orq prs`. Só lê o GitHub (via orq-prs) quando roda sem --local/--analise.
+#   --local          não chama o GitHub: PRs da última análise boa (demandas/.painel-prs.json)
+#   --analise <arq>  usa a análise já feita pelo orq-prs (o `orq prs` chama assim)
+#   --abrir          abre o índice no navegador (open)
+# Chamado pelo orq, que exporta ORQ_RAIZ e ORQ_ESTADO. Compatível com o bash 3.2 do macOS.
+set -euo pipefail
+
+AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RAIZ="${ORQ_RAIZ:?orq-painel roda pelo orq (orq painel)}"
+ESTADO="${ORQ_ESTADO:?orq-painel roda pelo orq (orq painel)}"
+CACHE="$ESTADO/.painel-prs.json"
+
+die() { echo "orq painel: $*" >&2; exit 1; }
+
+modo=gh; analise=""; abrir=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --local) modo=local ;;
+    --analise) [ $# -ge 2 ] || die "--analise exige um arquivo"; modo=analise; analise="$2"; shift ;;
+    --abrir) abrir=1 ;;
+    *) die "uso: orq painel [--local] [--abrir]" ;;
+  esac
+  shift
+done
+[ -d "$ESTADO" ] || die "não há pasta de demandas em $ESTADO"
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+# --- análise dos PRs --------------------------------------------------------
+
+aviso=""
+case "$modo" in
+  analise) cp "$analise" "$T/nova.json" ;;
+  gh)
+    if ORQ_PAINEL=0 "$AQUI/orq-prs" --json > "$T/nova.json" 2>"$T/prs.err"; then
+      jq -e .demandas "$T/nova.json" >/dev/null 2>&1 || echo '{"demandas":[]}' > "$T/nova.json"   # "nenhuma demanda com PRs"
+    else
+      aviso="GitHub não respondeu ($(tail -n1 "$T/prs.err" 2>/dev/null)); PRs da última leitura boa"
+      echo '{"demandas":[]}' > "$T/nova.json"
+    fi ;;
+  local) echo '{"demandas":[]}' > "$T/nova.json" ;;
+esac
+jq -e . "$T/nova.json" >/dev/null 2>&1 || die "análise inválida em $analise"
+[ -f "$CACHE" ] && jq -e .demandas "$CACHE" >/dev/null 2>&1 && cp "$CACHE" "$T/cache.json" || echo '{"demandas":{}}' > "$T/cache.json"
+
+# por demanda: a análise nova vale se nenhum repo dela falhou; senão fica a anterior (se houver),
+# marcada como velha; demandas que saíram da análise (concluídas) mantêm a última leitura
+jq -n --slurpfile n "$T/nova.json" --slurpfile c "$T/cache.json" '
+  ($n[0].geradoEm // now | floor) as $em
+  | { demandas: ($c[0].demandas + ([ $n[0].demandas[]
+        | . as $d | ([.repos[]? | select(.falhou)] | length > 0) as $falhou
+        | {key: .slug, value: (if $falhou and $c[0].demandas[$d.slug] != null
+                               then $c[0].demandas[$d.slug] + {falhou: true}
+                               else {dadosEm: $em, falhou: $falhou, analise: $d} end)} ] | from_entries)) }' > "$T/prs.json"
+if [ "$modo" != local ]; then cp "$T/prs.json" "$CACHE.tmp.$$" && mv "$CACHE.tmp.$$" "$CACHE"; fi
+if [ "$modo" != local ] && [ -z "$aviso" ]; then
+  falhos="$(jq -r '[.demandas[]?.repos[]? | select(.falhou) | .repo] | unique | join(", ")' "$T/nova.json")"
+  [ -z "$falhos" ] || aviso="GitHub não respondeu para $falhos; essas demandas mostram a última leitura boa"
+fi
+
+# --- dados locais -------------------------------------------------------------
+
+: > "$T/local.jsonl"
+for d in "$ESTADO"/*/; do
+  [ -f "$d/estado" ] || continue
+  s="$(basename "$d")"
+  docs=""; for f in brief.md spec.md contrato.md; do [ -f "$d/$f" ] && docs="$docs $f"; done
+  for f in "$d"/jaguar*.md; do [ -f "$f" ] && docs="$docs $(basename "$f")"; done
+  jq -nc --arg slug "$s" --arg fase "$(head -n1 "$d/estado")" \
+    --arg historico "$(tail -n 30 "$d/historico" 2>/dev/null || true)" \
+    --arg resumo "$(cat "$d/resumo.md" 2>/dev/null || true)" \
+    --arg brief "$(head -n1 "$d/brief.md" 2>/dev/null || true)" \
+    --arg prs "$(cat "$d/prs" 2>/dev/null || true)" --arg docs "$docs" \
+    '{slug: $slug, fase: $fase, historico: $historico, resumo: $resumo, brief: $brief, prs: $prs,
+      docs: ($docs | split(" ") | map(select(length > 0)))}' >> "$T/local.jsonl"
+done
+jq -s . "$T/local.jsonl" > "$T/local.json"
+
+# --- render: "caminho\0html\0" por página; cada uma gravada por troca atômica --------------
+
+jq -nj -L "$AQUI" --slurpfile local "$T/local.json" --slurpfile prs "$T/prs.json" \
+  --arg aviso "$aviso" --argjson agora "$(date +%s)" \
+  'include "orq-painel"; paginas($local[0]; $prs[0].demandas; $aviso; $agora)' > "$T/paginas"
+while IFS= read -r -d '' f && IFS= read -r -d '' html; do
+  dest="$ESTADO/$f"
+  [ -d "$(dirname "$dest")" ] || continue
+  printf '%s' "$html" > "$dest.tmp.$$" && mv "$dest.tmp.$$" "$dest"
+done < "$T/paginas"
+
+echo "file://$ESTADO/painel.html"
+[ -z "$abrir" ] || open "$ESTADO/painel.html" 2>/dev/null || true
