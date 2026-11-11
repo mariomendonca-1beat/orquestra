@@ -257,6 +257,9 @@ deve_falhar "slug inexistente" "não existe" prs fantasma
 deve_falhar "outros comandos ainda exigem herdr" "herdr" env -u ORQ_HERDR -u HERDR_ENV "$ORQ" status
 
 echo "painel"
+# os testes do prs merjaram o #11; o painel parte das fixtures originais
+for r in jaguar-plus jaguar-beta outro unico; do jq -n -f "$AQUI/fixtures/prs.jq" | jq --arg r "$r" '.[$r]' > "$FX/$r.json"; done
+printf '## O que é\nX\n\n## O que foi feito\nIntro\n- item a\n- item `b`\n' > "$EP/d-semval/resumo.md"
 printf '# Brief — Título do brief\n\nresto\n' > "$EP/d-conflito/brief.md"
 printf '## O que é\nFiltro <script>alert(1)</script> quebrado\n\n## O que foi feito\nCorrigimos o `filtro`.\n' > "$EP/d-pronto/resumo.md"
 printf '2026-11-01 10:00:00 nova\n2026-11-02 11:30:00 implementando -> pr-aberto | https://x/1\nhttps://x/2\n' > "$EP/d-pronto/historico"
@@ -276,6 +279,7 @@ contem "página volta ao índice" "$PC" 'href="../painel.html"'
 contem "sem resumo.md cai no título do brief" "$I" "Título do brief"
 PV="$EP/d-semval/resumo.html"
 contem "alerta na página da demanda" "$PV" "PRD aberto sem <code>validado</code>"
+contem "conflito na página da demanda" "$PC" "⚠ CONFLITO"
 contem "papel do PR" "$PC" '#11</a> <span class="fase">PRD</span>'
 contem "arquivos agrupados por prefixo" "$PP" "db/functions/fn_x_*.sql</code> (4)"
 contem "lista completa expansível" "$PP" "<li>db/functions/fn_x_c.sql</li>"
@@ -291,6 +295,16 @@ grep -qw 80 "$STUB_DIR/gh-calls" && nok "concluída não vai ao GitHub" || ok "c
 contem "hora da leitura dos PRs" "$I" "PRs lidos em"
 [ -s "$EP/.painel-prs.json" ] && ok "guarda a última leitura boa" || nok "sem .painel-prs.json"
 
+contem "lista do resumo.md vira lista" "$EP/d-semval/resumo.html" "<p>Intro</p><ul><li>item a</li><li>item <code>b</code></li></ul>"
+cp -R "$EP" "$T/ep-novo"; rm -f "$T/ep-novo/.painel-prs.json"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-novo" ORQ_PRS_ESPERAS="0 0" ORQ_PRS_ESPERA_UNKNOWN=0 STUB_GH_FALHA_REPO=jaguar-beta \
+  ORQ_GH="$AQUI/gh-stub" "$ORQ" painel >/dev/null 2>&1
+contem "repo em falha sem leitura anterior não finge leitura" "$T/ep-novo/d-semval/resumo.html" "sem leitura do GitHub"
+echo concluida > "$T/ep-novo/d-semval/estado"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-novo" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
+echo pr-aberto > "$T/ep-novo/d-conflito/estado"; echo concluida > "$T/ep-novo/d-conflito/estado"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-novo" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
+naocontem "concluída não usa leitura antiga do GitHub" "$T/ep-novo/d-conflito/resumo.html" "CONFLITO"
 out="$(STUB_GH_FALHA_REPO=jaguar-beta painel 2>&1)" || nok "painel com repo fora: $out"
 contem "aviso quando um repo não responde" "$I" "GitHub não respondeu para jaguar-beta"
 contem "demanda do repo fora mantém a leitura anterior" "$PV" "PRD aberto sem <code>validado</code>"

@@ -53,9 +53,9 @@ jq -n --slurpfile n "$T/nova.json" --slurpfile c "$T/cache.json" '
   ($n[0].geradoEm // now | floor) as $em
   | { demandas: ($c[0].demandas + ([ $n[0].demandas[]
         | . as $d | ([.repos[]? | select(.falhou)] | length > 0) as $falhou
-        | {key: .slug, value: (if $falhou and $c[0].demandas[$d.slug] != null
-                               then $c[0].demandas[$d.slug] + {falhou: true}
-                               else {dadosEm: $em, falhou: $falhou, analise: $d} end)} ] | from_entries)) }' > "$T/prs.json"
+        | if $falhou and $c[0].demandas[$d.slug] != null then {key: .slug, value: ($c[0].demandas[$d.slug] + {falhou: true})}
+          elif $falhou then empty   # nunca lida com sucesso: fica nos links locais, sem hora de leitura
+          else {key: .slug, value: {dadosEm: $em, falhou: false, analise: $d}} end ] | from_entries)) }' > "$T/prs.json"
 if [ "$modo" != local ]; then cp "$T/prs.json" "$CACHE.tmp.$$" && mv "$CACHE.tmp.$$" "$CACHE"; fi
 if [ "$modo" != local ] && [ -z "$aviso" ]; then
   falhos="$(jq -r '[.demandas[]?.repos[]? | select(.falhou) | .repo] | unique | join(", ")' "$T/nova.json")"
@@ -81,6 +81,7 @@ done
 jq -s . "$T/local.jsonl" > "$T/local.json"
 
 # --- render: "caminho\0html\0" por página; cada uma gravada por troca atômica --------------
+# (duas gerações simultâneas: cada página fica inteira; vence a que termina por último)
 
 jq -nj -L "$AQUI" --slurpfile local "$T/local.json" --slurpfile prs "$T/prs.json" \
   --arg aviso "$aviso" --argjson agora "$(date +%s)" \

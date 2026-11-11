@@ -16,6 +16,13 @@ def secao($re):
       elif .em then .out += [$l | sub("^\\s+"; "") | sub("\\s+$"; "")] else . end)
   | .out | map(select(length > 0)) | join(" ") | if length == 0 then null else . end;
 
+def linhas($re):
+  split("\n")
+  | reduce .[] as $l ({em: false, out: []};
+      if ($l | test("^#{1,6}\\s")) then .em = ($l | test($re; "i"))
+      elif .em then .out += [$l | sub("^\\s+"; "") | sub("\\s+$"; "")] else . end)
+  | .out | map(select(length > 0));
+
 def titulo_brief: sub("^#+\\s*"; "") | sub("^Brief\\s*[—–-]\\s*"; "") | if length == 0 then null else . end;
 
 # --- arquivos ----------------------------------------------------------------
@@ -60,7 +67,7 @@ def links_locais:
 
 def modelo($c):
   . as $l
-  | ($c[$l.slug]) as $p
+  | (if $l.fase == "concluida" then null else $c[$l.slug] end) as $p   # concluída: só dados locais
   # nota de várias linhas (os links do pr-aberto) continua na entrada anterior
   | ($l.historico | split("\n")
      | reduce .[] as $x ([]; if ($x | test("^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}( |$)"))
@@ -73,6 +80,7 @@ def modelo($c):
   | { slug: $l.slug, fase: $l.fase, docs: $l.docs, historico: $hist,
       mudou: ($hist | last | .ts // null),
       oque: (($l.resumo | secao("^#+\\s*o que [eé]\\s*$")) // ($l.brief | titulo_brief) // "(sem descrição)"),
+      feitoLinhas: ($l.resumo | linhas("^#+\\s*o que foi feito")),
       feito: ($l.resumo | secao("^#+\\s*o que foi feito")),
       temResumo: ($l.resumo | length > 0),
       dadosEm: $p.dadosEm, falhou: ($p.falhou // false), analise: ($a != null), prs: $prs,
@@ -171,7 +179,8 @@ def card:
 def js_busca: "const q=document.getElementById('q'),c=document.getElementById('concl');"
   + "q.addEventListener('input',()=>{const t=q.value.trim().toLowerCase();"
   + "document.querySelectorAll('[data-busca]').forEach(x=>{x.hidden=!!t&&!x.dataset.busca.includes(t)});"
-  + "if(c)c.open=!!t||c.dataset.aberto==='1'});";
+  + "if(c)c.open=!!t||c.dataset.aberto==='1'});"
+  + "if(c)c.addEventListener('toggle',()=>{if(!q.value.trim())c.dataset.aberto=c.open?'1':'0'});";
 
 def indice($ms; $aviso; $agora):
   ([$ms[] | select(.fase != "concluida")] | sort_by(.mudou // "") | reverse
@@ -203,6 +212,14 @@ def item_grupo:
   else "<li><details><summary><code>\(.rotulo | e)</code> (\(.n))</summary><ul class=\"lista\">"
        + (.lista | map("<li>\(e)</li>") | join("")) + "</ul></details></li>" end;
 
+# listas "- x" do resumo.md viram <ul>; o resto, parágrafo
+def texto_feito:
+  if .feito == null then "<p><span class=\"lista\">sem <code>resumo.md</code> ainda</span></p>"
+  elif any(.feitoLinhas[]; test("^[-*] "))
+  then ([.feitoLinhas[] | select(test("^[-*] ") | not)] | if length > 0 then "<p>\(join(" ") | codigo)</p>" else "" end)
+       + "<ul>" + ([.feitoLinhas[] | select(test("^[-*] ")) | "<li>\(sub("^[-*] "; "") | codigo)</li>"] | join("")) + "</ul>"
+  else "<p>\(.feito | codigo)</p>" end;
+
 def detalhe($agora):
   . as $m
   | pagina("\($m.slug) — demanda";
@@ -210,7 +227,7 @@ def detalhe($agora):
       + "<h1>\($m.slug | e)</h1><p class=\"meta\">\($m.fase | fase_nome | e) · mudou \($m.mudou | hist_quando) · página gerada \($agora | quando)</p>"
       + (if $m.falhou then "<div class=\"aviso\">⚠ O GitHub não respondeu na última leitura; PRs de \($m.dadosEm | quando).</div>" else "" end)
       + "<h2>O que é</h2><p>\($m.oque | codigo)</p>"
-      + "<h2>O que foi feito</h2><p>\(if $m.feito then $m.feito | codigo else "<span class=\"lista\">sem <code>resumo.md</code> ainda</span>" end)</p>"
+      + "<h2>O que foi feito</h2>" + texto_feito
       + (if $m.fase == "concluida" then "" else
           "<h2>Próximo</h2><p>\($m.quem | chip_quem)"
           + (if ($m.passos | length) > 1 then "</p><ul>" + ($m.passos | map("<li>\(.quem | chip_quem)<b>\(.repo | e)</b>: \(.passo | codigo)</li>") | join("")) + "</ul>"

@@ -96,7 +96,13 @@ for d in "$ESTADO"/*/; do
   }' >> "$T/demandas.jsonl"
 done
 jq -s 'sort_by(.slug)' "$T/demandas.jsonl" > "$T/demandas.json"
-[ "$(jq length "$T/demandas.json")" -gt 0 ] || { echo "nenhuma demanda com PRs (concluídas só com --todas)"; exit 0; }
+if [ "$(jq length "$T/demandas.json")" = 0 ]; then
+  echo "nenhuma demanda com PRs (concluídas só com --todas)"
+  if [ -z "$slug" ] && [ -z "$json" ] && [ "${ORQ_PAINEL:-1}" != 0 ]; then
+    echo '{"demandas":[]}' > "$T/vazia.json"; "$AQUI/orq-painel" --analise "$T/vazia.json" >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
 
 # --- busca no GitHub, um repo por chamada, em paralelo -----------------------
 
