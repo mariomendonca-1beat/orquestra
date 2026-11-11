@@ -8,7 +8,7 @@ HOME_ORQ="$(cd "$AQUI/.." && pwd)"
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 
-export STUB_DIR="$T/stub" ORQ_HERDR="$AQUI/herdr-stub" ORQ_RAIZ="$T/raiz" ORQ_INTERVALO=1
+export STUB_DIR="$T/stub" ORQ_HERDR="$AQUI/herdr-stub" ORQ_RAIZ="$T/raiz" ORQ_INTERVALO=1 ORQ_PAINEL=0
 unset ORQ_PAPEL ORQ_ESTADO
 mkdir -p "$STUB_DIR" "$ORQ_RAIZ/.orquestra"
 ESTADO="$ORQ_RAIZ/.orquestra/demandas"
@@ -255,6 +255,88 @@ cmp -s "$EP/.prs-ultimo.json" "$T/cache-antes" && ok "execução com repo em fal
 tem "o resto continua" "## d-ordem"
 deve_falhar "slug inexistente" "não existe" prs fantasma
 deve_falhar "outros comandos ainda exigem herdr" "herdr" env -u ORQ_HERDR -u HERDR_ENV "$ORQ" status
+
+echo "painel"
+# os testes do prs merjaram o #11; o painel parte das fixtures originais
+for r in jaguar-plus jaguar-beta outro unico; do jq -n -f "$AQUI/fixtures/prs.jq" | jq --arg r "$r" '.[$r]' > "$FX/$r.json"; done
+printf '## O que é\nX\n\n## O que foi feito\nIntro\n- item a\n- item `b`\n' > "$EP/d-semval/resumo.md"
+printf '# Brief — Título do brief\n\nresto\n' > "$EP/d-conflito/brief.md"
+printf '## O que é\nFiltro <script>alert(1)</script> quebrado\n\n## O que foi feito\nCorrigimos o `filtro`.\n' > "$EP/d-pronto/resumo.md"
+printf '2026-11-01 10:00:00 nova\n2026-11-02 11:30:00 implementando -> pr-aberto | https://x/1\nhttps://x/2\n' > "$EP/d-pronto/historico"
+painel() { env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EP" ORQ_PRS_ESPERAS="0 0" ORQ_PRS_ESPERA_UNKNOWN=0 \
+  ORQ_GH="$AQUI/gh-stub" ORQ_PAINEL=1 "$ORQ" painel "$@"; }
+rm -f "$STUB_DIR"/gh-*
+out="$(painel 2>&1)" && ok "painel roda fora do herdr" || nok "painel: $out"
+echo "$out" | grep -q "file://$EP/painel.html" && ok "imprime o caminho do índice" || nok "caminho: $out"
+I="$EP/painel.html"; PC="$EP/d-conflito/resumo.html"; PP="$EP/d-pronto/resumo.html"
+[ -s "$I" ] && [ -s "$PC" ] && [ -s "$EP/d-feita/resumo.html" ] && ok "índice e uma página por demanda" || nok "páginas não geradas"
+contem() { grep -qF -- "$3" "$2" && ok "$1" || nok "$1 — não achei em $(basename "$(dirname "$2")")/$(basename "$2"): $3"; }
+naocontem() { grep -qF -- "$3" "$2" && nok "$1 — achei: $3" || ok "$1"; }
+externos="$(cat "$EP"/painel.html "$EP"/*/resumo.html | grep -oE '(src|href)="[^"]*"' | grep -E '"(https?:)?//' | grep -v 'https://github.com/' || true)"
+igual "nenhum recurso externo além de links do GitHub" "$externos" ""
+contem "card linka a página da demanda" "$I" 'href="d-conflito/resumo.html"'
+contem "página volta ao índice" "$PC" 'href="../painel.html"'
+contem "sem resumo.md cai no título do brief" "$I" "Título do brief"
+PV="$EP/d-semval/resumo.html"
+contem "alerta na página da demanda" "$PV" "PRD aberto sem <code>validado</code>"
+contem "conflito na página da demanda" "$PC" "⚠ CONFLITO"
+contem "papel do PR" "$PC" '#11</a> <span class="fase">PRD</span>'
+contem "arquivos agrupados por prefixo" "$PP" "db/functions/fn_x_*.sql</code> (4)"
+contem "lista completa expansível" "$PP" "<li>db/functions/fn_x_c.sql</li>"
+contem "pasta com até 2 arquivos lista o caminho" "$PP" "<code>src/app.ts</code>"
+contem "resumo.md: o que foi feito" "$PP" "Corrigimos o <code>filtro</code>."
+contem "texto escapado" "$PP" "Filtro &lt;script&gt;alert(1)&lt;/script&gt; quebrado"
+naocontem "nada de script vindo do resumo" "$PP" "<script>alert"
+contem "nota de várias linhas fica numa entrada só" "$PP" "https://x/1 · https://x/2"
+contem "mudou em vem do histórico" "$I" "mudou 02/11 11:30"
+contem "spec-pronto é com você" "$I" '<span class="quem q-você">você</span>aprovar ou ajustar o spec'
+contem "concluídas recolhidas" "$I" 'Concluídas (1)'
+grep -qw 80 "$STUB_DIR/gh-calls" && nok "concluída não vai ao GitHub" || ok "concluída não vai ao GitHub"
+contem "hora da leitura dos PRs" "$I" "PRs lidos em"
+[ -s "$EP/.painel-prs.json" ] && ok "guarda a última leitura boa" || nok "sem .painel-prs.json"
+
+contem "lista do resumo.md vira lista" "$EP/d-semval/resumo.html" "<p>Intro</p><ul><li>item a</li><li>item <code>b</code></li></ul>"
+cp -R "$EP" "$T/ep-novo"; rm -f "$T/ep-novo/.painel-prs.json"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-novo" ORQ_PRS_ESPERAS="0 0" ORQ_PRS_ESPERA_UNKNOWN=0 STUB_GH_FALHA_REPO=jaguar-beta \
+  ORQ_GH="$AQUI/gh-stub" "$ORQ" painel >/dev/null 2>&1
+contem "repo em falha sem leitura anterior não finge leitura" "$T/ep-novo/d-semval/resumo.html" "sem leitura do GitHub"
+echo concluida > "$T/ep-novo/d-semval/estado"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-novo" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
+cp -R "$EP" "$T/ep-concl"   # .painel-prs.json daqui tem d-conflito em CONFLITO
+grep -q CONFLITO "$T/ep-concl/d-conflito/resumo.html" && ok "pré-condição: leitura guardada tem o conflito" || nok "pré-condição do conflito"
+echo concluida > "$T/ep-concl/d-conflito/estado"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-concl" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
+naocontem "concluída não usa leitura antiga do GitHub" "$T/ep-concl/d-conflito/resumo.html" "CONFLITO"
+printf '%s\n' "https://github.com/onebeatco/jaguar-beta/pull/12" > "$T/ep-concl/d-semval/prs"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-concl" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
+contem "links regravados invalidam a leitura guardada" "$T/ep-concl/d-semval/resumo.html" "não lido do GitHub"
+echo '{"demandas":[1]}' > "$T/ep-concl/.painel-prs.json"; rm -f "$T/ep-concl/painel.html"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$T/ep-concl" ORQ_GH="$AQUI/gh-stub" "$ORQ" painel --local >/dev/null 2>&1
+[ -s "$T/ep-concl/painel.html" ] && ok "cache corrompido não trava o painel" || nok "cache corrompido travou o painel"
+out="$(STUB_GH_FALHA_REPO=jaguar-beta painel 2>&1)" || nok "painel com repo fora: $out"
+contem "aviso quando um repo não responde" "$I" "GitHub não respondeu para jaguar-beta"
+contem "demanda do repo fora mantém a leitura anterior" "$PV" "PRD aberto sem <code>validado</code>"
+contem "e avisa que é leitura anterior" "$PV" "O GitHub não respondeu na última leitura"
+
+rm -f "$STUB_DIR"/gh-*; rm -f "$I"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EP" ORQ_GH="$AQUI/gh-stub" ORQ_PAINEL=1 "$ORQ" painel --local >/dev/null 2>&1
+[ -s "$I" ] && [ ! -e "$STUB_DIR/gh-calls" ] && ok "--local não chama o GitHub" || nok "--local"
+contem "--local usa a leitura guardada" "$PV" "PRD aberto sem <code>validado</code>"
+
+rm -f "$I" "$STUB_DIR"/gh-*
+out="$(env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EP" ORQ_PRS_ESPERAS="0 0" ORQ_PRS_ESPERA_UNKNOWN=0 \
+  ORQ_GH="$AQUI/gh-stub" ORQ_PAINEL=1 "$ORQ" prs 2>&1)"
+[ -s "$I" ] && ok "orq prs completo regrava o painel" || nok "orq prs não regravou o painel"
+igual "sem chamada extra ao GitHub" "$(grep -c completa "$STUB_DIR/gh-calls")" 4
+
+rm -f "$I" "$STUB_DIR"/gh-*; echo "spec" > "$EP/d-semprs/spec.md"
+ORQ_ESTADO="$EP" ORQ_GH="$AQUI/gh-stub" "$ORQ" estado d-semprs investigando "ajuste" >/dev/null 2>&1
+sleep 2; [ ! -e "$I" ] && ok "ORQ_PAINEL=0 não regrava" || nok "ORQ_PAINEL=0 regravou"
+out="$(ORQ_ESTADO="$EP" ORQ_GH="$AQUI/gh-stub" ORQ_PAINEL=1 ORQ_PAPEL=lider "$ORQ" estado d-semprs spec-pronto 2>&1)"
+echo "$out" | grep -q "aviso: falta .*d-semprs/resumo.md" && ok "avisa resumo.md ausente" || nok "aviso resumo: $out"
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -s "$I" ] && break; sleep 0.5; done
+[ -s "$I" ] && ok "orq estado regrava o painel em segundo plano" || nok "estado não regravou"
+[ ! -e "$STUB_DIR/gh-calls" ] && ok "estado não chama o GitHub" || nok "estado chamou o GitHub"
 
 echo
 if [ "$falhas" -eq 0 ]; then echo "tudo verde"; else echo "$falhas falha(s)"; exit 1; fi

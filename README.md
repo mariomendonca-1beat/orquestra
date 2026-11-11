@@ -18,7 +18,9 @@ claude --plugin-dir <raiz>/.orquestra     # e então: /orquestra:orquestrador
 ```
 
 Comandos da mecânica: `scripts/orq ajuda`. Status dos PRs das demandas (merge, conflito, eventos do flow,
-alertas): `scripts/orq prs`, ou `/orquestra:demandas-prs`; só lê e dispensa o herdr. Demandas criadas antes dos rótulos atuais:
+alertas): `scripts/orq prs`, ou `/orquestra:demandas-prs`; só lê e dispensa o herdr. Painel HTML local para bater o olho (o que é, o que foi feito, arquivos e PRs de cada demanda):
+`scripts/orq painel [--abrir]` gera `demandas/painel.html` e `demandas/<slug>/resumo.html`; `nova`, `estado` e
+`fechar` o regravam sozinhos com dados locais, e `orq prs` com os PRs já lidos. Demandas criadas antes dos rótulos atuais:
 `scripts/orq rotular` reaplica os nomes na lista de agentes do herdr. Testes: `bash tests/run.sh`.
 Design completo: `docs/specs/2026-10-09-orquestrador-design.md`.
 

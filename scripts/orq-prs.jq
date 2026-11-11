@@ -33,6 +33,7 @@ def normalizar($owner; $repo; $n; $topo):
       and ([$p.files.nodes[]?.path] as $ps | any(($topo.migracao_paths // [])[] | glob_re; . as $re | any($ps[]; test($re))))),
     truncado: ((.comments.totalCount // 0) > (.comments.nodes // [] | length)),
     arquivosTruncados: ((.files.totalCount // 0) > (.files.nodes // [] | length)),
+    arquivos: [.files.nodes[]?.path], arquivosTotal: (.files.totalCount // 0),
     eventos: eventos($n) }
   end;
 

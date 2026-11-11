@@ -96,7 +96,13 @@ for d in "$ESTADO"/*/; do
   }' >> "$T/demandas.jsonl"
 done
 jq -s 'sort_by(.slug)' "$T/demandas.jsonl" > "$T/demandas.json"
-[ "$(jq length "$T/demandas.json")" -gt 0 ] || { echo "nenhuma demanda com PRs (concluídas só com --todas)"; exit 0; }
+if [ "$(jq length "$T/demandas.json")" = 0 ]; then
+  echo "nenhuma demanda com PRs (concluídas só com --todas)"
+  if [ -z "$slug" ] && [ -z "$json" ] && [ "${ORQ_PAINEL:-1}" != 0 ]; then
+    echo '{"demandas":[]}' > "$T/vazia.json"; "$AQUI/orq-painel" --analise "$T/vazia.json" >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
 
 # --- busca no GitHub, um repo por chamada, em paralelo -----------------------
 
@@ -160,14 +166,16 @@ jq -n --slurpfile dem "$T/demandas.json" --slurpfile dados "$T/dados.json" --slu
   --slurpfile topo "$T/topo.json" --slurpfile cache "$T/cache.json" --argjson agora "$(date +%s)" \
   '{agora: $agora, demandas: $dem[0], dados: $dados[0], falhas: $falhas[0], topo: $topo[0], cache: $cache[0]}' > "$T/entrada.json"
 
-if [ -n "$json" ]; then
-  jq -L "$AQUI" 'include "orq-prs"; analisar' "$T/entrada.json"
-  exit 0
-fi
-jq -r -L "$AQUI" 'include "orq-prs"; analisar | markdown' "$T/entrada.json"
+jq -L "$AQUI" 'include "orq-prs"; analisar' "$T/entrada.json" > "$T/analise.json"
+if [ -n "$json" ]; then cat "$T/analise.json"; exit 0; fi
+jq -r -L "$AQUI" 'include "orq-prs"; markdown' "$T/analise.json"
 # cache só numa execução completa: com slug ou repo que falhou, o "desde" não avança, senão
 # a próxima execução perderia o que mudou nas demandas/repos que esta não viu
 if [ -z "$slug" ] && [ "$(jq length "$T/falhas.json")" = 0 ]; then
-  jq -L "$AQUI" 'include "orq-prs"; analisar | .cacheNovo' "$T/entrada.json" > "$T/cache.novo" \
-    && mv "$T/cache.novo" "$CACHE"
+  jq '.cacheNovo' "$T/analise.json" > "$T/cache.novo" && mv "$T/cache.novo" "$CACHE"
+fi
+# execução completa regrava o painel com a análise já feita, sem nova chamada ao GitHub
+# (repo em falha: o painel mantém o dado anterior daquela demanda)
+if [ -z "$slug" ] && [ "${ORQ_PAINEL:-1}" != 0 ]; then
+  "$AQUI/orq-painel" --analise "$T/analise.json" >/dev/null 2>&1 || echo "orq prs: o painel não foi regravado (rode: orq painel)" >&2
 fi

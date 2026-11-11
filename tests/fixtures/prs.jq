@@ -22,7 +22,8 @@ def bot: {createdAt: t(25), author: {login: "github-actions", __typename: "Bot"}
     "40": pr(40; "staging"; "MERGED"; t(20); null; []; []),
     "42": pr(42; "develop"; "OPEN"; null; "CLEAN"; []; []),
     "41": pr(41; "master"; "OPEN"; null; "CLEAN"; []; [ev("validado"; t(19)), bot]),
-    "50": pr(50; "staging"; "MERGED"; t(20); null; []; []),
+    "50": pr(50; "staging"; "MERGED"; t(20); null; ["db/functions/fn_x_a.sql", "db/functions/fn_x_b.sql",
+      "db/functions/fn_x_c.sql", "db/functions/fn_x_d.sql", "src/app.ts"]; []),
     "51": (pr(51; "master"; "OPEN"; null; "UNKNOWN"; []; [ev("validado"; t(22))])
            + {_leve: [{mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED"}]}),
     "60": (pr(60; "staging"; "OPEN"; null; "UNKNOWN"; []; [])
