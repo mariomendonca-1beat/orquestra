@@ -13,11 +13,14 @@ def glob_re:
   (gsub("\\."; "\\.") | gsub("\\*\\*"; "\u0001") | gsub("\\*"; "[^/]*") | gsub("\u0001"; ".*")) as $r
   | if test("/") then "^" + $r + "$" else "(^|/)" + $r + "$" end;
 
+# TODOS os marcadores de cada comentário (`scan`, como o `matchAll` do flow-events.mjs): um
+# comentário com `deploy_hml` + `deploy_prod` gera dois eventos. JSON inválido cai sozinho.
 def eventos($n):
   [ .comments.nodes[]? | select((.author.__typename // "") != "Bot") | . as $c
-    | (try (.body | capture("<!-- flow:event (?<j>\\{.*?\\}) -->").j | fromjson) catch null)
-    | select(type == "object" and .type != null)
-    | { type, pr: $n, actor: (.actor // $c.author.login),
+    | (.body // "") | scan("<!-- flow:event (\\{.*?\\}) -->") | .[0]
+    | (try fromjson catch null)
+    | select(type == "object" and (.type | type) == "string")
+    | { type, pr: $n, actor: (.actor // $c.author.login), note: (.note // null),
         at: ((try (.at | ts) catch null) // ($c.createdAt | ts)) } ];
 
 def normalizar($owner; $repo; $n; $topo):
@@ -34,6 +37,9 @@ def normalizar($owner; $repo; $n; $topo):
     truncado: ((.comments.totalCount // 0) > (.comments.nodes // [] | length)),
     arquivosTruncados: ((.files.totalCount // 0) > (.files.nodes // [] | length)),
     arquivos: [.files.nodes[]?.path], arquivosTotal: (.files.totalCount // 0),
+    reviews: [.reviews.nodes[]? | {state, autor: .author.login, at: (.submittedAt | ts)}],
+    comentarios: [.comments.nodes[]? | select((.author.__typename // "") != "Bot")
+                  | {autor: .author.login, at: (.createdAt | ts), marcado: ((.body // "") | test("<!-- flow:event"))}],
     eventos: eventos($n) }
   end;
 
@@ -123,6 +129,39 @@ def analisar_repo($prs; $topo):
           "merjar o PRD \($prdA | lista) (validado em \($val | dia))"
         else null end) };
 
+# --- a fila do /jaguar-plus:flow como fonte (orq-fila) -------------------------
+# Um item da fila casa com o repo da demanda quando o hml, o prod ou o review dele é um PR do
+# arquivo `prs`. Casou: o passo, a vez e a Espera são os da fila, e os alertas que a heurística
+# deduzia sozinha (deploy, validado) saem — a fila é quem sabe. Não casou e tudo está merjado:
+# ciclo fechado (a fila só mantém merjado com pendência). Fila ausente/falhou: heurística.
+def eh_comando: test("^(/|pr-|flow |orq )");
+def espera_txt: if .espera.em_espera then
+    " ⏸ em Espera de " + ([.espera.raizes[]? | if .numero then "\(.repo // "" | split("/") | last)#\(.numero)" else (.login // .tipo // "?") end] | join(", "))
+  else "" end;
+def pr_da_fila: if .acao == "publicar_prod" or (.state | IN("6b", "6p", "7b", "7c", "8")) then (.prod // .hml) else (.hml // .prod) end;
+def passo_da_fila: map("#\(pr_da_fila) \(.label)\(espera_txt)\(if (.comando // "") | eh_comando then " (`\(.comando)`)" else "" end)") | join("; ");
+def casa($ns): [.hml, .prod, .review] | map(select(. != null)) | any(. as $x | $ns | any(. == $x));
+
+def com_fila($fila; $nome; $rp):
+  if $fila == null then . + {origem: "heuristica", filaMotivo: null}
+  else ($fila.repos[$nome] // null) as $f
+  | if $f == null then . + {origem: "heuristica", filaMotivo: null}
+    elif ($f.ok | not) then . + {origem: "heuristica", filaMotivo: $f.motivo}
+    else [$rp[] | .number] as $ns
+      | [$f.itens[] | select(casa($ns))] as $its
+      | {fila: $its, filaFonte: $f.fonte, filaIdade: $f.idadeMin, filaAvisos: ($f.avisos // [])} as $meta
+      | if ($its | length) > 0 then
+          . + $meta + {origem: "fila", filaMotivo: (if $f.fonte == "cache-velho" then "fila de \($f.idadeMin) min atrás: \($f.motivo // "cache velho")" else null end),
+                       alertas: [.alertas[] | select(.tipo | IN("deploy", "sem-validado", "info") | not)],
+                       passo: ($its | passo_da_fila)}
+        elif ([$rp[] | select(.erro == null and .state == "OPEN")] | length) == 0
+             and ([$rp[] | select(.state == "MERGED")] | length) > 0 then
+          . + $meta + {origem: "fila", filaMotivo: null, cicloFechado: true,
+                       alertas: [.alertas[] | select(.tipo | IN("deploy", "sem-validado") | not)], passo: null}
+        else . + $meta + {origem: "heuristica", filaMotivo: "fora da fila do flow"} end
+    end
+  end;
+
 def analisar:
   . as $in
   | ($in.cache.em // null) as $desde
@@ -131,14 +170,16 @@ def analisar:
           | if $in.falhas["\($r.owner)/\($r.repo)"] then
               {owner: $r.owner, repo: $r.repo, number: $r.number, falhou: true, eventos: []}
             else ($in.dados["\($r.owner)/\($r.repo)"]["p\($r.number)"] | normalizar($r.owner; $r.repo; $r.number; $topo)) end
+          | . + {anot: ($r.anot // "")}
         ] as $prs
       | ([$prs[] | "\(.owner)/\(.repo)"] | reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end)) as $ordemRepos
-      | { slug: $d.slug, fase: $d.fase, ignoradas: $d.ignoradas, prs: $prs,
+      | { slug: $d.slug, fase: $d.fase, arquivoPrs: ($d.arquivoPrs != false), ignoradas: $d.ignoradas, prs: $prs,
           repos: [ $ordemRepos[] as $or
                    | ($or | split("/")[1]) as $nome
                    | if $in.falhas[$or] then {repo: $nome, falhou: $in.falhas[$or], alertas: [], prontos: [], passo: null}
                      else ([$prs[] | select("\(.owner)/\(.repo)" == $or)] as $rp
-                           | {repo: $nome, semTopologia: ($in.topo[$nome] == null)} + analisar_repo($rp; $in.topo[$nome])) end ] } ]
+                           | ({repo: $nome, semTopologia: ($in.topo[$nome] == null)} + analisar_repo($rp; $in.topo[$nome]))
+                           | com_fila($in.fila // null; $nome; $rp)) end ] } ]
   as $dems
   | [$dems[].prs[] | select(.falhou | not)] as $todos
   | ($todos | unique_by([.owner, .repo, .number])) as $unicos
@@ -200,6 +241,9 @@ def markdown:
           end ),
         ( $d.repos[] | select(.falhou) | "⚠ \(.repo): GitHub não respondeu (\(.falhou))" ),
         ( $d.repos[] | select(.semTopologia) | "ℹ \(.repo): topologia do flow ausente no checkout local; sem papel STG/PRD nem alertas de ciclo" ),
+        ( $d.repos[] | select(.filaMotivo != null)
+          | if .origem == "fila" then "ℹ \(.repo): \(.filaMotivo)"
+            else "ℹ \(.repo): fila do flow indisponível (\(.filaMotivo)) — passo pela heurística do orq" end ),
         ( $d.repos[].alertas[] | "\(if .tipo == "info" then "ℹ" else "⚠" end) \(.pr | rotulo): \(.msg)" ),
         ( [ $d.repos[] | select(.passo != null) | {repo, passo} ] | group_by(.passo)
           | if length == 0 then
@@ -208,4 +252,4 @@ def markdown:
             else "→ Próximo: " + (map("\(map(.repo) | join(", ")): \(.[0].passo)") | join("; ")) end ),
         ( if ($d.ignoradas | length) > 0 then "(referências sem URL ignoradas: \($d.ignoradas | map("#\(.)") | join(", ")))" else empty end ),
         "" ),
-    "_Próximo passo é heurística deste relatório; o passo canônico de uma demanda é o `/jaguar-plus:flow` na branch dela._";
+    "_Próximo passo vem da fila do `/jaguar-plus:flow` quando ela responde; a linha ℹ \"passo pela heurística do orq\" marca quando não._";

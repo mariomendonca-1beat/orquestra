@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# node falso para o orq-fila: `$ORQ_FILA_NODE <flow-queue.mjs> --resumo`, com cwd no checkout do repo.
+#   $FILA_FIXTURES/<repo>.json — a saída --resumo daquele repo
+#   $STUB_DIR/fila-calls       — uma linha por chamada: "<repo> <script>"
+#   STUB_FILA_RC=n             — sai com rc n (sem stdout)
+#   STUB_FILA_SLEEP=s          — dorme s segundos antes de responder (timeout)
+#   STUB_FILA_QUEBRADO=1       — devolve um JSON sem os campos da fila
+set -uo pipefail
+repo="$(basename "$PWD")"
+echo "$repo $1" >> "${STUB_DIR:?}/fila-calls"
+[ -z "${STUB_FILA_SLEEP:-}" ] || sleep "$STUB_FILA_SLEEP"
+echo "plugin jaguar-plus@onebeat 0.39.2 instalado, 0.39.3 publicada: claude plugin update jaguar-plus@onebeat" >&2
+[ "${STUB_FILA_RC:-0}" = 0 ] || { echo "erro simulado" >&2; exit "$STUB_FILA_RC"; }
+if [ -n "${STUB_FILA_QUEBRADO:-}" ]; then echo '{"repo":"x","suas":[{"branch":"b","state":"4a","vez":{}}]}'; exit 0; fi
+cat "${FILA_FIXTURES:?}/$repo.json"

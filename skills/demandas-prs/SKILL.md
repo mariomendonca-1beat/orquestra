@@ -1,31 +1,36 @@
 ---
 name: demandas-prs
-description: Status dos PRs das demandas do orquestrador — por demanda não concluída, cada PR (STG/PRD, por repo) com merge (quando, por quem), conflito, último evento do flow (validado, deploy_hml, deploy_prod…), alertas (merjado sem deploy, ordem quebrada, PRD sem validado) e o próximo passo, mais o que mudou desde a última consulta. Use quando o usuário disser "me atualiza dos PRs", "teve merge?", "como estão os PRs das demandas?", "status das demandas", "o que falta para fechar X?". Não confundir com my-open-prs (PRs abertos do autor, sem demandas nem eventos de ciclo).
-argument-hint: "[slug] [--todas]"
+description: O quadro das demandas do orquestrador — uma linha por demanda em voo com Situação e Próximo passo / quem (Igor, Guilherme, CS, você), recados prontos por pessoa e as decisões pendentes do usuário, com estado e vez vindos da fila do /jaguar-plus:flow. Com slug ou --detalhe, as tabelas por PR (merge, conflito, eventos, alertas). Use quando o usuário disser "me atualiza das demandas", "como estão os PRs?", "teve merge?", "status das demandas", "o que falta para fechar X?", "o que eu mando pro Igor?". Não confundir com my-open-prs (PRs abertos do autor, sem demandas nem ciclo).
+argument-hint: "[slug] [--detalhe] [--rapido] [--todas]"
 ---
 
-# PRs das demandas
+# Quadro das demandas
 
-Rode e mostre a saída **como sai** (tabelas e linhas de alerta intactas):
+Rode o comando da tabela, com **timeout de 600000 ms** no Bash (a fila do flow fria leva ~3 min), e
+mostre a saída **como sai**: não reformate, não reordene, não resuma, não troque palavras.
 
-```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/orq" prs [slug] [--todas]
-```
+| Chamada | Comando |
+|---|---|
+| `/demandas-prs` | `"${CLAUDE_PLUGIN_ROOT}/scripts/orq" prs --quadro` |
+| `/demandas-prs --rapido` | `"${CLAUDE_PLUGIN_ROOT}/scripts/orq" prs --quadro --rapido` (fila em cache, mesmo velha; mostra a idade) |
+| `/demandas-prs <slug>` | `"${CLAUDE_PLUGIN_ROOT}/scripts/orq" prs <slug>` (tabelas por PR daquela demanda) |
+| `/demandas-prs --detalhe` | `"${CLAUDE_PLUGIN_ROOT}/scripts/orq" prs` (tabelas por PR de todas) |
+| `--todas` | acrescente `--todas` (inclui concluídas) |
 
-- Sem argumento: todas as demandas com arquivo `prs` e fase ≠ `concluida`. Com `slug`, só ela
-  (em qualquer fase). `--todas` inclui as concluídas. `--json` devolve a análise crua.
-- Só lê: uma chamada `gh api graphql` por repo, a topologia do flow no checkout local de cada
-  repo e `demandas/*/prs`. Não precisa de herdr. Grava só `demandas/.prs-ultimo.json`, que
-  alimenta a linha **Desde …** da próxima execução.
+- Só lê: GitHub (`gh api graphql`), a fila do `/jaguar-plus:flow` (`flow-queue.mjs --resumo` do plugin
+  instalado no escopo de usuário, no checkout de cada repo; cache de 15 min em `demandas/.fila/`) e os
+  arquivos das demandas. Grava só caches em `demandas/`. Não precisa de herdr.
+- Pessoas, nomes curtos dos repos, ordem de merge e TTL: `config/pessoas.json`. Contexto humano que não está
+  no GitHub entra por `orq nota <slug> "<texto>"`.
+- ⚠ só marca risco de quebrar produção; ℹ é sinal leve (STG fora de ordem é normal).
 
-Depois das tabelas, 1–3 linhas suas: o que pede ação do usuário agora (alertas ⚠ primeiro,
-depois os prontos para merge) e quais demandas podem ser fechadas (`orq fechar <slug>`, só
-quando o usuário pedir). Não reformate as tabelas nem invente passos: o "Próximo" é heurística;
-para o passo canônico de uma demanda, `/jaguar-plus:flow` na branch dela.
+Depois da saída, no máximo **uma** linha sua, e só com o que o quadro não mostra (ex.: um agente
+`blocked` que o orquestrador conhece). Para o passo canônico de uma demanda: `/jaguar-plus:flow` na branch dela.
 
 ## Se algo falhar
 
 - `gh` sem login: peça `! gh auth login`.
-- Linha "⚠ <repo>: GitHub não respondeu": o resto do relatório vale; rode de novo em instantes.
-- "referências sem URL ignoradas": o `prs` da demanda cita PRs só por número; eles não entram.
-  Regrave os links com `orq estado <slug> pr-aberto "<links>"` se precisarem entrar.
+- "ℹ fila do flow indisponível em <repo> (<motivo>)": o quadro saiu com a heurística do orq para aquele repo.
+  Plugin ausente ou antigo: `claude plugin update jaguar-plus@onebeat` (o usuário roda). Timeout: rode de novo
+  ou use `--rapido`.
+- Linha "GitHub não respondeu": o resto vale; rode de novo em instantes.

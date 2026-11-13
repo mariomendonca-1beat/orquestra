@@ -163,7 +163,8 @@ Antes de tudo, atualize "O que foi feito" no `{{DEMANDA}}/resumo.md` com o que o
 entregam para o usuário final (2-3 linhas). Volte a atualizar sempre que regravar os PRs ou
 que uma rodada de review mudar o que é entregue.
 
-`orq estado {{SLUG}} pr-aberto "<links de todos os PRs, um por linha>"` e responda com um
+`orq estado {{SLUG}} pr-aberto "<links de todos os PRs, um por linha>"` (PR só de HML por desenho, como um revert
+em staging, leva `(só HML)` ou `(revert …)` na linha dele: o quadro não o trata como par incompleto) e responda com um
 resumo curto: PRs, ordem de merge, o veredito do self-review (do subagent) com o link do
 relatório de cada PR, com `jaguar-plus` o registro da Regra do jaguar-plus (item 6), e o que
 o humano deve validar. Não feche worktrees nem o

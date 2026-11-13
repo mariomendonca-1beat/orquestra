@@ -9,6 +9,7 @@ GH="${ORQ_GH:-gh}"
 RAIZ="${ORQ_RAIZ:?orq-prs roda pelo orq (orq prs)}"
 ESTADO="${ORQ_ESTADO:?orq-prs roda pelo orq (orq prs)}"
 CACHE="$ESTADO/.prs-ultimo.json"
+CONFIG="${ORQ_CONFIG:-$AQUI/../config/pessoas.json}"
 ESPERAS="${ORQ_PRS_ESPERAS:-2 5}"   # esperas entre tentativas quando o GitHub falha (5xx/rede)
 ESPERA_UNKNOWN="${ORQ_PRS_ESPERA_UNKNOWN:-3}"
 LOTE=5                              # PRs por chamada quando a chamada do repo inteiro falha
@@ -18,7 +19,8 @@ die() { echo "orq prs: $*" >&2; exit 1; }
 CAMPOS_LEVES='number state mergeable mergeStateStatus'
 CAMPOS="number title url state isDraft baseRefName headRefName mergedAt mergedBy{login} closedAt
   mergeable mergeStateStatus author{login} files(first:100){totalCount nodes{path}}
-  comments(last:60){totalCount nodes{createdAt author{login __typename} body}}"
+  comments(last:60){totalCount nodes{createdAt author{login __typename} body}}
+  reviews(last:20){nodes{state submittedAt author{login}}}"
 
 consulta() { # owner repo campos numero...
   local owner="$1" repo="$2" campos="$3" q n; shift 3
@@ -57,13 +59,45 @@ buscar_repo() { # owner repo numero... -> json em stdout
   echo "$acc"
 }
 
-slug=""; todas=""; json=""
+# aprovado_desatualizado só por merge da base: o diff do PR no sha aprovado (contra o merge-base
+# dele com a base) tem o mesmo `git patch-id --stable` que o diff da head atual. Só lê o checkout
+# local: busca o head do PR e a base para refs/orq/* e apaga essas refs ao fim.
+patchid_igual() { # repo n base sha
+  local g=(git -C "$RAIZ/$1") ref="refs/orq/pr-$2" base="refs/orq/base-$2" a x y ok=1
+  [ -d "$RAIZ/$1" ] || return 1
+  if "${g[@]}" fetch -q origin "+refs/pull/$2/head:$ref" "+refs/heads/$3:$base" 2>/dev/null \
+     && a="$("${g[@]}" rev-parse -q --verify "$4^{commit}" 2>/dev/null)"; then
+    x="$("${g[@]}" diff "$("${g[@]}" merge-base "$base" "$a")" "$a" | "${g[@]}" patch-id --stable | cut -d' ' -f1)"
+    y="$("${g[@]}" diff "$("${g[@]}" merge-base "$base" "$ref")" "$ref" | "${g[@]}" patch-id --stable | cut -d' ' -f1)"
+    [ -n "$x" ] && [ "$x" = "$y" ] && ok=0
+  fi
+  "${g[@]}" update-ref -d "$ref" 2>/dev/null || true; "${g[@]}" update-ref -d "$base" 2>/dev/null || true
+  return $ok
+}
+aprovacoes() { # analise.json -> {"repo#n": true|false}
+  jq -r '[ .demandas[] | .prs as $prs | .repos[] | .repo as $r | (.fila // [])[]
+      | select(((.warnings // .avisos // []) | map(if type == "object" then .code else . end) | index("aprovado_desatualizado")) != null)
+      | (.review // .hml) as $n | ($prs[] | select(.repo == $r and .number == $n)) as $p
+      | ([$p.eventos[] | select(.type == "aprovado")] | sort_by(.at) | last | .note // "") as $note
+      | ($note | capture("× *(?<s>[0-9a-f]{7,40})") | .s) as $sha
+      | "\($r) \($n) \($p.base) \($sha)" ] | unique[]' "$1" 2>/dev/null \
+  | while read -r r n base sha; do
+      if patchid_igual "$r" "$n" "$base" "$sha"; then v=true; else v=false; fi
+      jq -nc --arg k "$r#$n" --argjson v "$v" '{($k): $v}'
+    done | jq -s 'add // {}'
+}
+
+USO="uso: orq prs [slug] [--todas] [--json] [--quadro] [--rapido] [--sem-fila]"
+slug=""; todas=""; json=""; quadro=""; rapido=""; semfila=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --todas) todas=1 ;;
     --json) json=1 ;;
-    -*) die "opção desconhecida '$1' (uso: orq prs [slug] [--todas] [--json])" ;;
-    *) [ -z "$slug" ] || die "uso: orq prs [slug] [--todas] [--json]"; slug="$1" ;;
+    --quadro) quadro=1 ;;
+    --rapido) rapido=1 ;;
+    --sem-fila) semfila=1 ;;
+    -*) die "opção desconhecida '$1' ($USO)" ;;
+    *) [ -z "$slug" ] || die "$USO"; slug="$1" ;;
   esac
   shift
 done
@@ -80,6 +114,7 @@ for d in "$ESTADO"/*/; do
   [ -f "$d/estado" ] || continue
   s="$(basename "$d")"; fase="$(head -n1 "$d/estado")"
   if [ -n "$slug" ]; then [ "$s" = "$slug" ] || continue
+  elif [ -n "$quadro" ]; then [ -n "$todas" ] || [ "$fase" != concluida ] || continue   # o quadro mostra também as sem PR
   else [ -f "$d/prs" ] || continue; [ -n "$todas" ] || [ "$fase" != concluida ] || continue; fi
   prs="$(cat "$d/prs" 2>/dev/null || true)"
   urls="$(echo "$prs" | grep -oE "$URL_RE" || true)"
@@ -87,21 +122,39 @@ for d in "$ESTADO"/*/; do
   nums_url="$(echo "$urls" | sed -n 's|.*/pull/||p' | sort -u)"
   ignoradas="$(echo "$prs" | sed -E "s#$URL_RE##g" | { grep -oE '#[0-9]+' || true; } | tr -d '#' | sort -un \
     | while read -r n; do echo "$nums_url" | grep -qx "$n" || echo "$n"; done)"
-  jq -nc --arg slug "$s" --arg fase "$fase" --arg urls "$urls" --arg ign "$ignoradas" '{
-    slug: $slug, fase: $fase,
-    refs: ($urls | split("\n") | map(select(length > 0) | capture("github\\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/pull/(?<n>[0-9]+)")
-           | {owner, repo, number: (.n | tonumber)})
-           | reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end)),   # sem duplicatas, na ordem do arquivo
+  # cada referência leva a anotação da sua linha (o texto sem a URL), ex.: "(só HML)", "(revert do #443 …)"
+  arq=false; [ -f "$d/prs" ] && arq=true
+  jq -nc --arg slug "$s" --arg fase "$fase" --arg prs "$prs" --arg re "$URL_RE" --arg ign "$ignoradas" --argjson arq "$arq" '{
+    slug: $slug, fase: $fase, arquivoPrs: $arq,
+    refs: ($prs | split("\n") | map(. as $l | ($l | gsub($re; "") | gsub("^\\s+|\\s+$"; "")) as $a
+             | [$l | scan("https://github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)")]
+             | map({owner: .[0], repo: .[1], number: (.[2] | tonumber), anot: $a})) | add // []
+           | reduce .[] as $x ([]; if any(.[]; .owner == $x.owner and .repo == $x.repo and .number == $x.number)
+                                    then . else . + [$x] end)),   # sem duplicatas, na ordem do arquivo
     ignoradas: ($ign | split("\n") | map(select(length > 0) | tonumber))
   }' >> "$T/demandas.jsonl"
 done
 jq -s 'sort_by(.slug)' "$T/demandas.jsonl" > "$T/demandas.json"
-if [ "$(jq length "$T/demandas.json")" = 0 ]; then
+if [ -z "$quadro" ] && [ "$(jq length "$T/demandas.json")" = 0 ]; then
   echo "nenhuma demanda com PRs (concluídas só com --todas)"
   if [ -z "$slug" ] && [ -z "$json" ] && [ "${ORQ_PAINEL:-1}" != 0 ]; then
     echo '{"demandas":[]}' > "$T/vazia.json"; "$AQUI/orq-painel" --analise "$T/vazia.json" >/dev/null 2>&1 || true
   fi
   exit 0
+fi
+
+# --- a fila do flow (orq-fila), em paralelo com o GitHub ----------------------
+# Só para os repos da demanda que a config põe na fila. --sem-fila: heurística pura (diagnóstico).
+
+echo null > "$T/fila.json"; FILA_PID=""
+if [ -z "$semfila" ]; then
+  fila_repos="$(jq -r --slurpfile c "$CONFIG" '[.[].refs[].repo] | unique
+    | map(select(. as $r | ($c[0].fila.repos // []) | index($r))) | .[]' "$T/demandas.json" 2>/dev/null || true)"
+  if [ -n "$fila_repos" ]; then
+    # shellcheck disable=SC2086
+    ( "$AQUI/orq-fila" ${rapido:+--rapido} $fila_repos > "$T/fila.novo" && mv "$T/fila.novo" "$T/fila.json" ) &
+    FILA_PID=$!
+  fi
 fi
 
 # --- busca no GitHub, um repo por chamada, em paralelo -----------------------
@@ -164,11 +217,28 @@ done
 [ -f "$CACHE" ] && jq -e . "$CACHE" >/dev/null 2>&1 && cp "$CACHE" "$T/cache.json" || echo null > "$T/cache.json"
 jq -n --slurpfile dem "$T/demandas.json" --slurpfile dados "$T/dados.json" --slurpfile falhas "$T/falhas.json" \
   --slurpfile topo "$T/topo.json" --slurpfile cache "$T/cache.json" --argjson agora "$(date +%s)" \
-  '{agora: $agora, demandas: $dem[0], dados: $dados[0], falhas: $falhas[0], topo: $topo[0], cache: $cache[0]}' > "$T/entrada.json"
+  --slurpfile fila "$T/fila.json" \
+  '{agora: $agora, demandas: $dem[0], dados: $dados[0], falhas: $falhas[0], topo: $topo[0], cache: $cache[0], fila: $fila[0]}' > "$T/entrada.json"
 
 jq -L "$AQUI" 'include "orq-prs"; analisar' "$T/entrada.json" > "$T/analise.json"
 if [ -n "$json" ]; then cat "$T/analise.json"; exit 0; fi
-jq -r -L "$AQUI" 'include "orq-prs"; markdown' "$T/analise.json"
+if [ -n "$quadro" ]; then
+  # o que só existe nos arquivos da demanda: última mudança (historico) e a nota do `orq nota`
+  for s in $(jq -r '.[].slug' "$T/demandas.json"); do
+    d="$ESTADO/$s"
+    ult="$(tail -n1 "$d/historico" 2>/dev/null | cut -c1-19)"
+    mud="$( [ -n "$ult" ] && date -j -f "%Y-%m-%d %H:%M:%S" "$ult" +%s 2>/dev/null || date -d "$ult" +%s 2>/dev/null || echo null)"
+    nota=""; nota_em=null
+    if [ -s "$d/nota" ]; then nota="$(head -n1 "$d/nota")"; nota_em="$(stat -f %m "$d/nota" 2>/dev/null || stat -c %Y "$d/nota")"; fi
+    jq -nc --arg s "$s" --argjson m "${mud:-null}" --arg n "$nota" --argjson ne "$nota_em" \
+      '{slug: $s, mudou: $m, nota: (if $n == "" then null else {texto: $n, em: $ne} end)}'
+  done | jq -s 'map({key: .slug, value: .}) | from_entries' > "$T/locais.json"
+  aprovacoes "$T/analise.json" > "$T/aprovacao.json"
+  jq -r -L "$AQUI" --slurpfile cfg "$CONFIG" --slurpfile loc "$T/locais.json" --slurpfile apr "$T/aprovacao.json" \
+    'include "orq-quadro"; quadro($cfg[0]; $loc[0]; $apr[0])' "$T/analise.json"
+else
+  jq -r -L "$AQUI" 'include "orq-prs"; markdown' "$T/analise.json"
+fi
 # cache só numa execução completa: com slug ou repo que falhou, o "desde" não avança, senão
 # a próxima execução perderia o que mudou nas demandas/repos que esta não viu
 if [ -z "$slug" ] && [ "$(jq length "$T/falhas.json")" = 0 ]; then
@@ -177,5 +247,7 @@ fi
 # execução completa regrava o painel com a análise já feita, sem nova chamada ao GitHub
 # (repo em falha: o painel mantém o dado anterior daquela demanda)
 if [ -z "$slug" ] && [ "${ORQ_PAINEL:-1}" != 0 ]; then
-  "$AQUI/orq-painel" --analise "$T/analise.json" >/dev/null 2>&1 || echo "orq prs: o painel não foi regravado (rode: orq painel)" >&2
+  # o quadro também lista demandas sem arquivo `prs`; o painel recebe o mesmo recorte do `orq prs`
+  jq '.demandas |= map(select(.arquivoPrs != false))' "$T/analise.json" > "$T/analise.painel.json"
+  "$AQUI/orq-painel" --analise "$T/analise.painel.json" >/dev/null 2>&1 || echo "orq prs: o painel não foi regravado (rode: orq painel)" >&2
 fi

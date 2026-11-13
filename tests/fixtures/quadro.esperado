@@ -1,0 +1,37 @@
+| # | Demanda | Situação | Próximo passo / quem |
+|---|---|---|---|
+| 1 | **q-fechado** | ✅ Tudo em PRD | Pode fechar (`orq fechar q-fechado`) |
+| 2 | **q-dep** | Em PRD, falta deploy | ⚠ **Igor:** rodar `/deploy production` do plus #241 |
+| 3 | **q-val** | ✅ Validado pelo CS | ⚠ **Guilherme:** merjar beta #311 (PRD) (só depois do plus aplicado em PRD) → ⚠ **Você:** resolver o conflito do beta #311 (PRD) → **Igor:** merjar plus #213 (PRD) |
+| 4 | **q-desat** | Aprovado, falta merjar STG | **Guilherme:** merjar beta #330 (STG) · merjar beta #340 (STG) · ℹ aprovação do beta #330 vale: a head só trouxe merge da base |
+| 5 | **q-front** | Em review | **CS:** validar plus-front (bull) #401 em HML (`flow validado`) · **Guilherme:** review plus-front #403 · review plus-front (api+admin) #400 · review plus-front #402 · ℹ só HML por desenho: par incompleto esperado |
+| 6 | **q-prio** | Em review | **Igor:** review plus #200 → beta #300 aprovado, ⏸ em Espera do plus #200 (HML) |
+| 7 | **q-stg** | Em review | **Igor:** review plus #220 → **Guilherme:** merjar beta #320 (STG, aprovado) · ℹ STG do beta pode entrar antes do plus · ℹ beta #320 (STG) em conflito |
+| 8 | **q-spec** | Spec pronto | **Você:** aprovar ou ajustar o spec |
+| 9 | **q-impl** | Implementando | **Líder:** implementando |
+
+**Recados prontos**
+
+- **Igor**
+  - Rodar `/deploy production` do plus #241 (q-dep)
+  - Merjar plus #213 (PRD) (q-val)
+  - Review plus #200 (q-prio): segura o beta #300
+  - Review plus #220 (q-stg)
+- **Guilherme**
+  - Merjar beta #311 (PRD) (só depois do plus aplicado em PRD) (q-val)
+  - Merjar beta #330 (STG) (q-desat)
+  - Merjar beta #340 (STG) (q-desat)
+  - Review plus-front #403 (q-front)
+  - Review plus-front (api+admin) #400, só HML por desenho (q-front)
+  - Review plus-front #402 (q-front)
+  - Merjar beta #320 (STG, aprovado) (q-stg)
+- **CS**
+  - Validar plus-front (bull) #401 em HML (`flow validado`) (q-front)
+
+**Decisões pendentes suas**
+
+1. q-val: resolver o conflito do beta #311 (PRD)
+2. q-spec: spec pronto esperando aprovação.
+
+ℹ plugin jaguar-plus@onebeat 0.39.2 instalado, 0.39.3 publicada: claude plugin update jaguar-plus@onebeat
+_Situação e próximo passo vêm da fila do `/jaguar-plus:flow`; pessoas em `config/pessoas.json`._

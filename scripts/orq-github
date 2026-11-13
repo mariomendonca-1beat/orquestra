@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# orq-github — avisos do GitHub para o `orq esperar`: eventos novos nos PRs das demandas não
+# concluídas, comparados com o último estado visto (demandas/.github-visto.json). Só lê.
+# Usa a mesma busca GraphQL do `orq prs` (orq-prs --json --sem-fila: segundos, sem a fila do flow).
+# Saída: uma linha por evento novo, no padrão do esperar:
+#   github  <slug>  <repo>#<n>  <detalhe>
+# Primeira execução (sem estado) e PR novo numa demanda: viram linha de base, sem aviso.
+# Repo que falhou: o estado dele não avança (nada se perde nem se repete na próxima).
+set -euo pipefail
+
+AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ESTADO="${ORQ_ESTADO:?orq-github roda pelo orq}"
+CONFIG="${ORQ_CONFIG:-$AQUI/../config/pessoas.json}"
+VISTO="$ESTADO/.github-visto.json"
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+ORQ_PAINEL=0 "$AQUI/orq-prs" --json --sem-fila > "$T/analise.json" 2> "$T/err" || { cat "$T/err" >&2; exit 1; }
+jq -e '.demandas' "$T/analise.json" >/dev/null 2>&1 || exit 0   # "nenhuma demanda com PRs"
+[ -f "$VISTO" ] && jq -e . "$VISTO" >/dev/null 2>&1 && cp "$VISTO" "$T/visto.json" || echo null > "$T/visto.json"
+
+jq -r --slurpfile visto "$T/visto.json" --slurpfile cfg "$CONFIG" '
+  ($visto[0]) as $v
+  | ($cfg[0].logins // {}) as $logins
+  | ([$logins | to_entries[] | select(.value != ($cfg[0].voce // "Você")) | .key]) as $revisores
+  | def chaves($p):
+      [ ($p.eventos[] | select(.type | IN("review", "reprovado", "aprovado", "deploy_hml", "deploy_prod", "validado"))
+          | {k: "ev:\(.type):\(.at):\(.actor)", txt: "\(.type) @\(.actor)", at}),
+        ($p.reviews[]? | select((.state | IN("APPROVED", "CHANGES_REQUESTED"))
+                                or (.state == "COMMENTED" and (.autor as $a | $revisores | index($a))))
+          | {k: "rv:\(.state):\(.at):\(.autor)", txt: "\(if .state == "APPROVED" then "aprovado" else "review" end) @\(.autor)", at}),
+        ($p.comentarios[]? | select((.marcado | not) and (.autor as $a | $revisores | index($a)))
+          | {k: "cm:\(.at):\(.autor)", txt: "comentário @\(.autor)", at}),
+        (if $p.state == "MERGED" then {k: "merjado", txt: "merjado @\($p.mergedBy // "?")", at: $p.mergedAt} else empty end),
+        (if $p.state == "CLOSED" then {k: "fechado", txt: "fechado sem merge", at: 0} else empty end) ];
+  [ .demandas[] as $d
+    | ([$d.repos[] | select(.falhou) | .repo]) as $falhos
+    | $d.prs[] | select(.falhou | not) | select(.erro == null) | select(.repo as $r | $falhos | index($r) | not)
+    | . as $p | "\(.repo)#\(.number)" as $id
+    | { id: $id, slug: $d.slug, repo: .repo, conflito: .conflito, state: .state,
+        chaves: (chaves($p) | unique_by(.k)) } ] as $atual
+  | ( if $v == null then [] else
+      [ $atual[] as $a | ($v.prs[$a.id] // null) as $antes | select($antes != null)
+        | ( [ $a.chaves[] | select(.k as $k | $antes.chaves | index($k) | not) ] | sort_by(.at) | .[] | .txt ),
+          ( if ($antes.conflito | not) and $a.conflito then "conflito"
+            elif $antes.conflito and ($a.conflito | not) and $a.state == "OPEN" then "saiu do conflito" else empty end )
+        | "github  \($a.slug)  \($a.id)  \(.)" ] end ) as $linhas
+  | { linhas: $linhas,
+      novo: { prs: ( ($v.prs // {}) + ($atual | map({key: .id, value: {conflito, chaves: [.chaves[].k]}}) | from_entries)
+                     | with_entries(select(.key as $k | $atual | any(.id == $k))) ) } }
+' "$T/analise.json" > "$T/saida.json"
+
+jq '.novo' "$T/saida.json" > "$T/visto.novo"
+cp "$T/visto.novo" "$T/visto.final"
+# mantém os PRs de repos em falha que estavam no estado anterior
+falhos="$(jq -r '[.demandas[].repos[] | select(.falhou) | .repo] | unique[]' "$T/analise.json")"
+if [ -n "$falhos" ] && [ "$(cat "$T/visto.json")" != null ]; then
+  jq -s --arg f "$falhos" '.[0] as $n | .[1] as $v | ($f | split("\n")) as $fs
+    | $n | .prs += ($v.prs | with_entries(select(.key | split("#")[0] as $r | $fs | index($r))))' \
+    "$T/visto.final" "$T/visto.json" > "$T/x" && mv "$T/x" "$T/visto.final"
+fi
+mv "$T/visto.final" "$VISTO.novo" && mv "$VISTO.novo" "$VISTO"
+jq -r '.linhas[]' "$T/saida.json"

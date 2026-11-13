@@ -349,8 +349,39 @@ relevante() { # escopo linha-antiga linha-nova fase-atual
   return 1
 }
 
+# avisos do GitHub no esperar global: a cada GH_INTERVALO s, o orq-github roda em segundo plano
+# (lock em demandas/.github-poll.lock) e grava as linhas em demandas/.github-eventos; cada volta
+# do laço recolhe o arquivo. Evento num repo invalida o cache da fila do flow dele e dispara a
+# atualização em segundo plano. ORQ_GITHUB_INTERVALO=0 desliga.
+gh_intervalo() {
+  if [ -n "${ORQ_GITHUB_INTERVALO:-}" ]; then echo "$ORQ_GITHUB_INTERVALO"
+  else jq -r '.github.intervaloSeg // 300' "${ORQ_CONFIG:-$ORQ_HOME/config/pessoas.json}" 2>/dev/null || echo 300; fi
+}
+github_poll() { # imprime as linhas `github …` já recolhidas; dispara a próxima rodada quando é hora
+  local iv ult lock="$ESTADO/.github-poll.lock" ev="$ESTADO/.github-eventos" repos
+  iv="$(gh_intervalo)"; [ "$iv" -gt 0 ] 2>/dev/null || return 0
+  # lock de uma rodada morta (kill -9) não trava o poll para sempre
+  if [ -d "$lock" ] && [ $(( $(date +%s) - $(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock") )) -gt 600 ]; then rmdir "$lock" 2>/dev/null || true; fi
+  if [ -s "$ev" ] && [ ! -d "$lock" ]; then
+    mv "$ev" "$ev.lido"
+    repos="$(awk '{split($3, a, "#"); print a[1]}' "$ev.lido" | sort -u)"
+    if [ -n "$repos" ]; then
+      # shellcheck disable=SC2086
+      ( ORQ_RAIZ="$RAIZ" ORQ_ESTADO="$ESTADO" "$ORQ_HOME/scripts/orq-fila" --invalidar $repos
+        ORQ_RAIZ="$RAIZ" ORQ_ESTADO="$ESTADO" "$ORQ_HOME/scripts/orq-fila" --atualizar $repos ) </dev/null >/dev/null 2>&1 &
+    fi
+    cat "$ev.lido"; rm -f "$ev.lido"
+  fi
+  ult="$(cat "$ESTADO/.github-poll.em" 2>/dev/null || echo 0)"
+  if [ $(( $(date +%s) - ult )) -ge "$iv" ] && mkdir "$lock" 2>/dev/null; then
+    date +%s > "$ESTADO/.github-poll.em"
+    ( trap 'rmdir "$lock"' EXIT
+      ORQ_RAIZ="$RAIZ" ORQ_ESTADO="$ESTADO" "$ORQ_HOME/scripts/orq-github" >> "$ev" 2>/dev/null || true ) </dev/null >/dev/null 2>&1 &
+  fi
+}
+
 cmd_esperar() {
-  local slug="" max=0 escopo snapf atual antigo inicio mudou linha chave velha
+  local slug="" max=0 escopo snapf atual antigo inicio mudou linha chave velha gh_linhas
   while [ $# -gt 0 ]; do
     case "$1" in
       --max) max="$2"; shift 2 ;;
@@ -365,6 +396,7 @@ cmd_esperar() {
     atual="$(snapshot "$slug")"
     antigo="$(cat "$snapf")"
     mudou=""
+    if [ "$escopo" = global ]; then gh_linhas="$(github_poll)"; [ -z "$gh_linhas" ] || mudou="$gh_linhas"$'\n'; fi
     while IFS= read -r linha; do
       [ -n "$linha" ] || continue
       # chave = tudo menos o último campo (fase ou status)
@@ -372,13 +404,13 @@ cmd_esperar() {
       velha="$(echo "$antigo" | awk -v k="$chave" 'substr($0,1,length(k)+1)==k" " {print}')"
       [ "$velha" != "$linha" ] || continue
       [ -n "$velha" ] || continue   # agente/demanda novo: vira linha de base
-      if relevante "$escopo" "$velha" "$linha"; then mudou="$mudou$linha (antes: ${velha##* }"$'\n'; fi
+      if relevante "$escopo" "$velha" "$linha"; then mudou="$mudou$linha (antes: ${velha##* })"$'\n'; fi
     done <<< "$atual"
     # agentes que sumiram do registro não importam; os que sumiram do herdr viram 'morto'
     echo "$atual" > "$snapf"
     if [ -n "$mudou" ]; then
       echo "EVENTOS:"
-      echo "$mudou" | sed -e '/^$/d' -e 's/$/)/' -e 's/^F /fase    /' -e 's/^A /agente  /'
+      echo "$mudou" | sed -e '/^$/d' -e 's/^F /fase    /' -e 's/^A /agente  /'
       return 0
     fi
     if [ "$max" -gt 0 ] && [ $(( $(date +%s) - inicio )) -ge "$max" ]; then
@@ -386,6 +418,14 @@ cmd_esperar() {
     fi
     sleep "$INTERVALO"
   done
+}
+
+cmd_nota() {
+  [ $# -ge 2 ] || die "uso: orq nota <slug> \"<texto>\"  (ou: orq nota <slug> -  para apagar)"
+  local slug="$1" texto="$2" d
+  exigir_demanda "$slug"; d="$(dir_demanda "$slug")"
+  if [ "$texto" = - ]; then rm -f "$d/nota"; echo "$slug: nota apagada"
+  else printf '%s\n' "$(echo "$texto" | tr '\n' ' ' | sed 's/ *$//')" > "$d/nota"; echo "$slug: nota gravada"; fi
 }
 
 cmd_reviver() {
@@ -496,7 +536,14 @@ orq — orquestrador de demandas via herdr   (raiz: $RAIZ, papel: $PAPEL)
   orq painel [--local] [--abrir]      gera demandas/painel.html e uma página por demanda
                                       (<slug>/resumo.html); --local não lê o GitHub (só lê;
                                       dispensa o herdr). nova/estado/fechar regravam o local
-  orq esperar [slug] [--max seg]      bloqueia até um evento relevante
+  orq prs --quadro [--rapido]         o quadro das demandas (o /demandas-prs): situação, próximo
+                                      passo e quem, recados por pessoa e decisões suas. Estado e
+                                      vez vêm da fila do /jaguar-plus:flow (cache de 15 min);
+                                      --rapido usa o cache mesmo velho; --sem-fila: só heurística
+  orq fila [--atualizar] [repo...]    idade do cache da fila do flow; --atualizar roda a fila
+  orq nota <slug> "<texto>" | -       contexto que não está no GitHub, mostrado no quadro
+  orq esperar [slug] [--max seg]      bloqueia até um evento relevante (o global também acorda
+                                      com eventos do GitHub nos PRs das demandas: linhas `github`)
   orq reviver <slug> [repo]           sobe de novo um agente morto
   orq rotular [slug]                  reaplica rótulos dos agentes vivos no herdr
   orq fechar <slug>                   fecha workspace, remove worktrees já pushadas
@@ -505,15 +552,18 @@ EOF
 
 main() {
   local sub="${1:-ajuda}"; shift || true
-  # `prs` e `painel` só leem arquivos e o GitHub: rodam de qualquer terminal, sem herdr
-  [ "$sub" = prs ] || [ "$sub" = painel ] || [ "${HERDR_ENV:-}" = 1 ] || [ -n "${ORQ_HERDR:-}" ] || die "não estou dentro do herdr (HERDR_ENV != 1)"
+  # `prs`, `painel`, `nota` e `fila` só leem/escrevem arquivos e leem o GitHub: rodam sem herdr
+  case "$sub" in prs|painel|nota|fila) ;; *) [ "${HERDR_ENV:-}" = 1 ] || [ -n "${ORQ_HERDR:-}" ] || die "não estou dentro do herdr (HERDR_ENV != 1)" ;; esac
   command -v jq >/dev/null || die "precisa do jq"
   RAIZ="$(achar_raiz)"
   ESTADO="${ORQ_ESTADO:-$RAIZ/.orquestra/demandas}"
   case "$sub" in
     prs) ORQ_RAIZ="$RAIZ" ORQ_ESTADO="$ESTADO" exec "$ORQ_HOME/scripts/orq-prs" "$@" ;;
     painel) ORQ_RAIZ="$RAIZ" ORQ_ESTADO="$ESTADO" exec "$ORQ_HOME/scripts/orq-painel" "$@" ;;
-    nova|estado|dev|falar|ler|teclas|status|esperar|reviver|rotular|fechar) "cmd_$sub" "$@" ;;
+    fila)
+      if [ "${1:-}" = --atualizar ]; then shift; ORQ_RAIZ="$RAIZ" ORQ_ESTADO="$ESTADO" "$ORQ_HOME/scripts/orq-fila" --atualizar "$@" >/dev/null || true; fi
+      ORQ_RAIZ="$RAIZ" ORQ_ESTADO="$ESTADO" exec "$ORQ_HOME/scripts/orq-fila" --idade "$@" ;;
+    nova|estado|dev|falar|ler|teclas|status|esperar|reviver|rotular|fechar|nota) "cmd_$sub" "$@" ;;
     ajuda|-h|--help) ajuda ;;
     *) die "comando desconhecido '$sub' (orq ajuda)" ;;
   esac

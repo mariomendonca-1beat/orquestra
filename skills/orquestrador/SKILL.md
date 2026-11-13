@@ -39,6 +39,7 @@ Escolha um slug curto (`[a-z][a-z0-9-]`, até 18 chars), escreva o brief no scra
 | agente `blocked` | `"$ORQ" ler <agente> 40`, mostre ao usuário **o que está sendo pedido** e espere a decisão. Nunca decida sozinho. Com a decisão: `"$ORQ" teclas <agente> <teclas>` ou o usuário responde direto na pane. Se o diálogo for o "Teach auto mode about your environment?" na subida (o `orq nova/dev/reviver` avisa), o prompt inicial não foi entregue: depois da decisão, rode o `"$ORQ" falar` que o aviso imprimiu. |
 | líder `idle` | `"$ORQ" ler lider-<slug> 40`. Se for `PRONTO PARA PR: <worktree>` e a fase for `implementando`, dispare `"$ORQ" falar lider-<slug> "/jaguar-plus:pr-open"` e informe o usuário. Se for pergunta, leve ao usuário. Se for só "spec pronto", ignore (o evento de fase cobre). |
 | agente `morto` | Informe e proponha `"$ORQ" reviver <slug> [repo]`; só execute com o ok do usuário. |
+| linha `github <slug> <repo>#<n> <detalhe>` | Evento novo num PR de demanda (review, aprovado, comentário de revisor, merjado, `deploy_hml`/`deploy_prod`/`validado`, conflito, fechado). Uma linha ao usuário. Se mudar o próximo passo de alguém (aprovado, merjado, deploy), sugira `/orquestra:demandas-prs`. Não aja sozinho. |
 | fase `pr-aberto` | Mostre os links (`"$ORQ" status <slug>`), a ordem de merge que o líder indicou e o veredito do self-review. O self-review roda sempre num **subagent novo**, nunca no contexto de quem implementou; se o líder disser que rodou no próprio contexto, devolva. |
 
 Seja breve ao reportar: uma linha por evento, detalhe só quando pede decisão.
@@ -61,6 +62,8 @@ um novo gate.
 - "o que era cada demanda?", "quero bater o olho" → `"$ORQ" painel --abrir` (índice em
   `demandas/painel.html`, uma página por demanda em `demandas/<slug>/resumo.html`; lê o GitHub).
 - recado ao líder → `"$ORQ" falar lider-<slug> "<msg>"`. Ao dev, prefira passar pelo líder.
+- contexto que não está no GitHub ("CS confere amanhã", "em espera por decisão sua") → `"$ORQ" nota <slug> "<texto>"`
+  (aparece no quadro; começando com `decisão:` vira item de Decisões pendentes; `"$ORQ" nota <slug> -` apaga).
 - "o PR de X mudou de número" → `"$ORQ" estado <slug> pr-aberto "<links novos>"` (na fase
   `pr-aberto`, regrava os links).
 - "os agentes aparecem com nome repetido" → `"$ORQ" rotular [slug]` (só exibição), com o ok

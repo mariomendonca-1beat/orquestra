@@ -1,0 +1,26 @@
+{
+  "voce": "Você",
+  "validacao": "CS",
+  "lider": "Líder",
+  "repos": {
+    "jaguar-plus":          { "curto": "plus",       "revisa": "Igor",      "merja": "Igor",      "deploya": "Igor" },
+    "jaguar-plus-frontend": { "curto": "plus-front", "revisa": "Guilherme", "merja": "Guilherme",
+                              "areas": { "bull/": "bull", "api/": "api", "frontend/": "front", "admin/": "admin" } },
+    "jaguar-beta":          { "curto": "beta",       "revisa": "Guilherme", "merja": "Guilherme" },
+    "jaguar-plus-ui":       { "curto": "ui",         "revisa": "Guilherme", "merja": "Guilherme" }
+  },
+  "logins": {
+    "igormeloonebeat": "Igor",
+    "guilhermesjlender-1beat": "Guilherme",
+    "mariomendonca-1beat": "Você"
+  },
+  "ordemMerge": ["jaguar-plus", "jaguar-plus-ui", "jaguar-plus-frontend", "jaguar-beta"],
+  "fila": {
+    "repos": ["jaguar-plus", "jaguar-beta", "jaguar-plus-frontend"],
+    "ttlMin": 15,
+    "timeoutSeg": 300,
+    "cacheVelhoMaxH": 24,
+    "versaoMinima": "0.39.2"
+  },
+  "github": { "intervaloSeg": 300 }
+}

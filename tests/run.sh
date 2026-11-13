@@ -9,6 +9,8 @@ T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 
 export STUB_DIR="$T/stub" ORQ_HERDR="$AQUI/herdr-stub" ORQ_RAIZ="$T/raiz" ORQ_INTERVALO=1 ORQ_PAINEL=0
+# nunca o plugin nem o GitHub de verdade: sem plugin instalado e sem poll do GitHub, salvo onde o teste liga
+export ORQ_PLUGINS_JSON="$T/sem-plugin.json" ORQ_GITHUB_INTERVALO=0 ORQ_FILA_NODE="$AQUI/fila-stub"
 unset ORQ_PAPEL ORQ_ESTADO
 mkdir -p "$STUB_DIR" "$ORQ_RAIZ/.orquestra"
 ESTADO="$ORQ_RAIZ/.orquestra/demandas"
@@ -195,7 +197,7 @@ dem d-feita concluida "$B/80"
 dem d-refs pr-aberto "$B/90 (HML, substitui #99)" "$B/91" "$B/91 (repetido)"
 mkdir -p "$EP/d-semprs"; echo spec-pronto > "$EP/d-semprs/estado"
 prs() { env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EP" ORQ_PRS_ESPERAS="0 0" ORQ_PRS_ESPERA_UNKNOWN=0 \
-  ORQ_GH="$AQUI/gh-stub" "$ORQ" prs "$@"; }
+  ORQ_GH="$AQUI/gh-stub" "$ORQ" prs --sem-fila "$@"; }
 rm -f "$STUB_DIR"/gh-*
 out="$(prs 2>&1)" && ok "prs roda fora do herdr" || nok "prs fora do herdr: $out"
 igual "uma chamada completa por repo" "$(grep -c completa "$STUB_DIR/gh-calls")" 4
@@ -339,4 +341,186 @@ for i in 1 2 3 4 5 6 7 8 9 10; do [ -s "$I" ] && break; sleep 0.5; done
 [ ! -e "$STUB_DIR/gh-calls" ] && ok "estado não chama o GitHub" || nok "estado chamou o GitHub"
 
 echo
+echo "quadro (fila do flow)"
+EQ="$T/estado-quadro"; FX2="$T/fixtures-quadro"; FF="$T/fila-fixtures"; mkdir -p "$EQ" "$FX2" "$FF"
+# plugin falso: o de usuário (0.39.2) e um de projeto antigo, que não pode ser usado
+for v in user:0.39.2 proj:0.20.1; do
+  d="$T/plugin-${v%%:*}"; mkdir -p "$d/skills/flow/scripts" "$d/.claude-plugin"; : > "$d/skills/flow/scripts/flow-queue.mjs"
+  jq -n --arg v "${v##*:}" '{version: $v}' > "$d/.claude-plugin/plugin.json"
+done
+jq -n --arg u "$T/plugin-user" --arg p "$T/plugin-proj" '{plugins: {"jaguar-plus@onebeat": [
+  {scope: "project", projectPath: "/x", installPath: $p, version: "0.20.1"},
+  {scope: "user", installPath: $u, version: "0.39.2"}]}}' > "$T/plugins.json"
+for r in jaguar-plus jaguar-beta jaguar-plus-frontend; do jq -n -f "$AQUI/fixtures/fila.jq" | jq --arg r "$r" '.[$r]' > "$FF/$r.json"; done
+mkdir -p "$ORQ_RAIZ/jaguar-plus-frontend/.claude/flow"
+echo '{"hml":"staging","prod":"master","migracao_automatica":true,"migracao_paths":[]}' > "$ORQ_RAIZ/jaguar-plus-frontend/.claude/flow/topology.json"
+
+# repo git do patch-id: #330 = aprovado + merge da base (mesmo diff); #340 = aprovado + mudança nova
+O="$T/origem-beta.git"; W="$T/w-beta"; git init -q --bare "$O"; git init -q "$W"
+gw() { git -C "$W" -c user.email=t@t -c user.name=t "$@"; }
+gw checkout -q -b staging; echo base > "$W/base.txt"; gw add .; gw commit -q -m c0
+gw checkout -q -b f330; echo um > "$W/a.txt"; gw add .; gw commit -q -m c1; SHA330="$(gw rev-parse --short=8 HEAD)"
+gw checkout -q staging; echo mais > "$W/b.txt"; gw add .; gw commit -q -m c2
+gw checkout -q f330; gw merge -q --no-edit staging
+gw checkout -q -b f340 staging~1; echo dois > "$W/c.txt"; gw add .; gw commit -q -m c3; SHA340="$(gw rev-parse --short=8 HEAD)"
+echo tres > "$W/d.txt"; gw add .; gw commit -q -m c4
+gw push -q "$O" staging f330:refs/pull/330/head f340:refs/pull/340/head
+rm -rf "$ORQ_RAIZ/jaguar-beta/.git"; git init -q "$ORQ_RAIZ/jaguar-beta"; git -C "$ORQ_RAIZ/jaguar-beta" remote add origin "$O"
+
+for r in jaguar-plus jaguar-beta jaguar-plus-frontend; do
+  jq -n -f "$AQUI/fixtures/prs-quadro.jq" | jq --arg r "$r" '.[$r]' \
+    | sed -e "s/__SHA330__/$SHA330/" -e "s/__SHA340__/$SHA340/" > "$FX2/$r.json"
+done
+P=https://github.com/onebeatco/jaguar-plus/pull; B=https://github.com/onebeatco/jaguar-beta/pull
+F=https://github.com/onebeatco/jaguar-plus-frontend/pull
+demq() { local s="$1" f="$2"; shift 2; mkdir -p "$EQ/$s"; echo "$f" > "$EQ/$s/estado"; : > "$EQ/$s/agentes"
+  echo "2026-11-12 10:00:00 x -> $f" > "$EQ/$s/historico"; [ $# -eq 0 ] || printf '%s\n' "$@" > "$EQ/$s/prs"; }
+demq q-prio pr-aberto "$P/200 [STG]" "$P/201" "$B/300" "$B/301"
+demq q-val pr-aberto "$P/212" "$P/213" "$B/310" "$B/311"
+demq q-stg pr-aberto "$P/220" "$P/221" "$B/320" "$B/321"
+demq q-fechado pr-aberto "$P/230" "$P/231"
+demq q-dep pr-aberto "$P/240" "$P/241"
+demq q-desat pr-aberto "$B/330" "$B/331" "$B/340" "$B/341"
+demq q-front pr-aberto "$F/400 (só HML)" "$F/401" "$F/405" "$F/402" "$F/406" "$F/403" "$F/407"
+demq q-spec spec-pronto
+demq q-impl implementando
+demq q-feita concluida "$P/230"
+
+quadro() { env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EQ" ORQ_PRS_ESPERAS="0 0" ORQ_PRS_ESPERA_UNKNOWN=0 \
+  ORQ_GH="$AQUI/gh-stub" GH_FIXTURES="$FX2" FILA_FIXTURES="$FF" ORQ_PLUGINS_JSON="$T/plugins.json" "$ORQ" prs --quadro "$@"; }
+rm -f "$STUB_DIR"/gh-* "$STUB_DIR/fila-calls"
+out="$(quadro 2>&1)" && ok "quadro roda fora do herdr" || nok "quadro: $out"
+[ -n "${QUADRO_DUMP:-}" ] && echo "$out" > "$QUADRO_DUMP"
+# snapshot: da tabela ao fim (o título e a linha de abertura têm hora); QUADRO_DUMP=arq regrava a referência
+igual "snapshot do quadro" "$(echo "$out" | sed 1,4d)" "$(cat "$AQUI/fixtures/quadro.esperado")"
+linha() { echo "$out" | grep -F -- "**$1**"; }
+tem_l() { linha "$2" | grep -qF -- "$3" && ok "$1" || nok "$1 — linha $2: $(linha "$2")"; }
+nao_l() { linha "$2" | grep -qF -- "$3" && nok "$1 — linha $2: $(linha "$2")" || ok "$1"; }
+igual "fila chamada uma vez por repo" "$(sort "$STUB_DIR/fila-calls" | awk '{print $1}' | tr '\n' ' ')" "jaguar-beta jaguar-plus jaguar-plus-frontend "
+grep -q "plugin-user" "$STUB_DIR/fila-calls" && ! grep -q "plugin-proj" "$STUB_DIR/fila-calls" \
+  && ok "usa o plugin do escopo de usuário, nunca o de projeto" || nok "caminho do plugin: $(cat "$STUB_DIR/fila-calls")"
+tem "título com a hora da fila" "· fila do flow de"
+tem "primeira execução" "Primeira consulta."
+tem "cabeçalho da tabela" "| # | Demanda | Situação | Próximo passo / quem |"
+tem_l "Espera: o beta não é 'merjar'" q-prio "beta #300 aprovado, ⏸ em Espera do plus #200 (HML)"
+tem_l "o plus que segura recebe o review" q-prio "**Igor:** review plus #200"
+nao_l "Espera não vira merjar" q-prio "merjar beta #300"
+tem "recado com o que segura" "Review plus #200 (q-prio): segura o beta #300"
+tem_l "PRD posterior antes do anterior em PRD é ⚠" q-val "⚠ **Guilherme:** merjar beta #311 (PRD) (só depois do plus aplicado em PRD)"
+tem_l "conflito no PRD é ⚠ e decisão" q-val "⚠ **Você:** resolver o conflito do beta #311 (PRD)"
+tem "conflito no PRD em decisões" "q-val: resolver o conflito do beta #311 (PRD)"
+tem_l "STG fora de ordem é só ℹ" q-stg "ℹ STG do beta pode entrar antes do plus"
+tem_l "conflito no STG é só ℹ" q-stg "ℹ beta #320 (STG) em conflito"
+nao_l "nada de STG gera ⚠" q-stg "⚠"
+tem_l "fora da fila e merjado: ciclo fechado" q-fechado "| ✅ Tudo em PRD | Pode fechar (\`orq fechar q-fechado\`)"
+tem_l "7b é ⚠ com o comando" q-dep "⚠ **Igor:** rodar \`/deploy production\` do plus #241"
+tem_l "aprovação vale com patch-id igual" q-desat "ℹ aprovação do beta #330 vale: a head só trouxe merge da base"
+nao_l "patch-id diferente: a aprovação não é dada como válida" q-desat "#340 vale"
+[ -z "$(git -C "$ORQ_RAIZ/jaguar-beta" for-each-ref refs/orq)" ] && ok "refs/orq/* apagadas" || nok "sobrou ref em refs/orq"
+tem_l "só HML por desenho" q-front "ℹ só HML por desenho: par incompleto esperado"
+tem_l "só HML vira review do revisor" q-front "review plus-front (api+admin) #400"
+tem "recado do só HML" "Review plus-front (api+admin) #400, só HML por desenho (q-front)"
+tem_l "área: só bull" q-front "**CS:** validar plus-front (bull) #401 em HML"
+tem_l "4 áreas: sem rótulo" q-front "review plus-front #402"
+tem_l "lista truncada: sem rótulo" q-front "review plus-front #403"
+nao "nunca 'bull' como nome do repo" "bull #"
+tem_l "spec-pronto sem prs" q-spec "| Spec pronto | **Você:** aprovar ou ajustar o spec |"
+tem "spec-pronto em decisões" "q-spec: spec pronto esperando aprovação."
+tem_l "implementando com o líder" q-impl "| Implementando | **Líder:** implementando |"
+nao "concluída fica fora" "q-feita"
+tem "aviso do plugin no rodapé, uma vez" "ℹ plugin jaguar-plus@onebeat 0.39.2 instalado, 0.39.3 publicada"
+igual "aviso do plugin não repete" "$(echo "$out" | grep -c '0.39.3 publicada')" 1
+ordem="$(echo "$out" | grep -E '^\| [0-9]+ \|' | sed -E 's/^\| [0-9]+ \| \*\*([^*]+)\*\*.*/\1/' | tr '\n' ' ')"
+case "$ordem" in "q-fechado q-dep "*"q-spec q-impl ") ok "ordem: mais perto de PRD primeiro, sem PR no fim" ;; *) nok "ordem: $ordem" ;; esac
+
+echo "quadro: idempotência e cache"
+rm -f "$STUB_DIR/fila-calls"; o1="$out"
+out="$(quadro 2>&1)"
+[ ! -s "$STUB_DIR/fila-calls" ] && ok "dentro do TTL não roda a fila" || nok "rodou a fila dentro do TTL"
+igual "segunda execução igual (fora título e abertura)" "$(echo "$out" | sed '1,3d')" "$(echo "$o1" | sed '1,3d')"
+tem "segunda execução: nada andou" "Nada andou desde"
+out="$(ORQ_FILA_TTL_MIN=0 quadro 2>&1)"
+igual "fora do TTL roda uma vez por repo" "$(wc -l < "$STUB_DIR/fila-calls" | tr -d ' ')" 3
+rm -f "$STUB_DIR/fila-calls"
+out="$(ORQ_FILA_TTL_MIN=0 quadro --rapido 2>&1)"
+[ ! -s "$STUB_DIR/fila-calls" ] && ok "--rapido não roda a fila" || nok "--rapido rodou a fila"
+tem_l "--rapido usa o cache" q-prio "⏸ em Espera do plus #200"
+out="$(env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EQ" "$ORQ" fila 2>&1)"; tem "orq fila mostra a idade" "jaguar-plus: cache de 0 min"
+
+echo "quadro: fallback"
+fallback() { # descrição padrão-do-motivo env...
+  local d="$1" pad="$2"; shift 2
+  rm -rf "$EQ/.fila"
+  out="$(env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EQ" \
+    ORQ_PRS_ESPERAS="0 0" ORQ_PRS_ESPERA_UNKNOWN=0 ORQ_GH="$AQUI/gh-stub" GH_FIXTURES="$FX2" FILA_FIXTURES="$FF" \
+    ORQ_PLUGINS_JSON="$T/plugins.json" ORQ_FILA_TIMEOUT=1 "$@" "$ORQ" prs --quadro 2>&1)"
+  tem_l "$d: cai na heurística com ℹ" q-prio "ℹ fila do flow indisponível em plus — passo pela heurística do orq"
+  out2="$(env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EQ" ORQ_PRS_ESPERAS="0 0" ORQ_PRS_ESPERA_UNKNOWN=0 ORQ_GH="$AQUI/gh-stub" \
+    GH_FIXTURES="$FX2" FILA_FIXTURES="$FF" ORQ_PLUGINS_JSON="$T/plugins.json" ORQ_FILA_TIMEOUT=1 "$@" "$ORQ" prs q-prio 2>&1)"
+  echo "$out2" | grep -q "fila do flow indisponível ($pad" && ok "$d: motivo no detalhe" || nok "$d: motivo — $(echo "$out2" | grep ℹ)"
+}
+fallback "plugin ausente" "plugin jaguar-plus não instalado" ORQ_PLUGINS_JSON="$T/nao-existe.json"
+jq '.version = "0.30.1"' "$T/plugin-user/.claude-plugin/plugin.json" > "$T/x" && cp "$T/plugin-user/.claude-plugin/plugin.json" "$T/pj" && mv "$T/x" "$T/plugin-user/.claude-plugin/plugin.json"
+fallback "versão abaixo da mínima" "plugin jaguar-plus 0.30.1 abaixo da mínima 0.39.2"
+cp "$T/pj" "$T/plugin-user/.claude-plugin/plugin.json"
+fallback "fila com rc≠0" "a fila saiu com rc=3" STUB_FILA_RC=3
+fallback "timeout" "a fila passou de 1s" STUB_FILA_SLEEP=3
+fallback "formato mudou" "formato da fila mudou" STUB_FILA_QUEBRADO=1
+nao "heurística: rodapé avisa" "Situação e próximo passo vêm da fila"
+quadro >/dev/null 2>&1   # cache bom
+out="$(ORQ_FILA_TTL_MIN=0 STUB_FILA_RC=3 quadro 2>&1)"
+tem_l "fila falhou com cache recente: usa o cache e diz" q-prio "ℹ fila de 0 min atrás: a fila saiu com rc=3"
+tem_l "cache velho mantém o passo da fila" q-prio "⏸ em Espera do plus #200"
+
+echo "dois marcadores no mesmo comentário"
+out="$(env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EQ" ORQ_PRS_ESPERAS="0 0" ORQ_PRS_ESPERA_UNKNOWN=0 ORQ_GH="$AQUI/gh-stub" \
+  GH_FIXTURES="$FX2" "$ORQ" prs q-fechado --json --sem-fila 2>&1)"
+igual "deploy_hml + deploy_prod do mesmo comentário" "$(echo "$out" | jq -r '[.demandas[0].prs[] | select(.number == 231) | .eventos[].type] | join(" ")')" "deploy_hml deploy_prod"
+igual "nenhum alerta de deploy no PRD" "$(echo "$out" | jq '[.demandas[0].repos[].alertas[] | select(.tipo == "deploy")] | length')" 0
+igual "marcador quebrado ignorado sozinho" "$(echo "$out" | jq '[.demandas[0].prs[] | select(.number == 231) | .eventos[]] | length')" 2
+
+echo "nota"
+out="$(env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EQ" "$ORQ" nota q-fechado "CS: conferir filtros em PRD" 2>&1)"; tem "grava" "nota gravada"
+out="$(quadro 2>&1)"; tem_l "aparece na célula" q-fechado "📝 *CS: conferir filtros em PRD* (nota"
+nao_l "nota nova não é antiga" q-fechado "(antiga)"
+touch -t 202611010000 "$EQ/q-fechado/nota"
+out="$(quadro 2>&1)"; tem_l "nota anterior à última mudança é antiga" q-fechado "(antiga)"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EQ" "$ORQ" nota q-dep "decisão: esperar a janela de deploy" >/dev/null
+out="$(quadro 2>&1)"; tem "nota 'decisão:' vira decisão" "q-dep: esperar a janela de deploy"
+env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EQ" "$ORQ" nota q-fechado - >/dev/null
+[ ! -e "$EQ/q-fechado/nota" ] && ok "apaga" || nok "nota não apagada"
+deve_falhar "nota sem texto" "uso" env -u ORQ_HERDR -u HERDR_ENV ORQ_ESTADO="$EQ" "$ORQ" nota q-fechado
+
+echo "github no esperar"
+ogh() { env ORQ_ESTADO="$EQ" ORQ_RAIZ="$ORQ_RAIZ" ORQ_PRS_ESPERAS="0 0" ORQ_PRS_ESPERA_UNKNOWN=0 ORQ_GH="$AQUI/gh-stub" \
+  GH_FIXTURES="$FX2" "$@" "$AQUI/../scripts/orq-github"; }
+rm -f "$EQ/.github-visto.json"
+out="$(ogh 2>&1)"; igual "primeira rodada só grava a base" "$out" ""
+[ -s "$EQ/.github-visto.json" ] && ok "estado visto persistido" || nok "sem .github-visto.json"
+jq '."200".reviews.nodes = [{state: "CHANGES_REQUESTED", submittedAt: "2026-11-13T15:00:00Z", author: {login: "guilhermesjlender-1beat"}}]
+  | ."200".comments.nodes += [{createdAt: "2026-11-13T15:01:00Z", author: {login: "igormeloonebeat", __typename: "User"}, body: "olha isso"}]
+  | ."221".state = "OPEN" | ."221".mergeStateStatus = "DIRTY" | ."221".mergeable = "CONFLICTING"' "$FX2/jaguar-plus.json" > "$T/x" && mv "$T/x" "$FX2/jaguar-plus.json"
+out="$(ogh 2>&1)"
+tem "review do GitHub vira linha github" "github  q-prio  jaguar-plus#200  review @guilhermesjlender-1beat"
+tem "comentário de revisor sem marcador" "github  q-prio  jaguar-plus#200  comentário @igormeloonebeat"
+tem "conflito novo" "github  q-stg  jaguar-plus#221  conflito"
+igual "uma linha por evento" "$(echo "$out" | grep -c '^github')" 3
+out="$(ogh 2>&1)"; igual "rodada seguinte sem mudança: nada" "$out" ""
+jq '."300".state = "MERGED" | ."300".mergedAt = "2026-11-13T16:00:00Z" | ."300".mergedBy = {login: "guilhermesjlender-1beat"}' \
+  "$FX2/jaguar-beta.json" > "$T/x" && mv "$T/x" "$FX2/jaguar-beta.json"
+out="$(ogh STUB_GH_FALHA_REPO=jaguar-beta 2>&1)"; igual "repo em falha não avisa" "$(echo "$out" | grep -c '^github')" 0
+out="$(ogh 2>&1)"; tem "e não perde o evento na próxima" "github  q-prio  jaguar-beta#300  merjado @guilhermesjlender-1beat"
+out="$(ogh 2>&1)"; igual "sem repetir" "$out" ""
+
+# integração: o esperar global acorda com a linha github (o poll roda em segundo plano)
+jq '."201".comments.nodes += [{createdAt: "2026-11-13T17:00:00Z", author: {login: "igormeloonebeat", __typename: "User"},
+  body: "<!-- flow:event {\"type\":\"aprovado\",\"at\":\"2026-11-13T17:00:00Z\",\"actor\":\"igormeloonebeat\"} -->"}]' \
+  "$FX2/jaguar-plus.json" > "$T/x" && mv "$T/x" "$FX2/jaguar-plus.json"
+rm -f "$EQ/.github-poll.em" "$EQ/.snap-global"
+out="$(ORQ_ESTADO="$EQ" ORQ_GITHUB_INTERVALO=1 ORQ_GH="$AQUI/gh-stub" GH_FIXTURES="$FX2" ORQ_PRS_ESPERAS="0 0" \
+  ORQ_PRS_ESPERA_UNKNOWN=0 ORQ_PLUGINS_JSON="$T/nao-existe.json" "$ORQ" esperar --max 15 2>&1)"
+tem "esperar acorda com github" "github  q-prio  jaguar-plus#201  aprovado @igormeloonebeat"
+sleep 1; [ -e "$EQ/.fila/jaguar-plus.invalido" ] && ok "evento invalida o cache da fila do repo" || nok "fila não invalidada"
+[ ! -e "$EQ/.fila/jaguar-beta.invalido" ] && ok "e só do repo do evento" || nok "invalidou repo sem evento"
+
 if [ "$falhas" -eq 0 ]; then echo "tudo verde"; else echo "$falhas falha(s)"; exit 1; fi

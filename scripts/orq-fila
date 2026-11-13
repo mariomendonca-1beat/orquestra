@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# orq-fila — a fila do /jaguar-plus:flow (flow-queue.mjs --resumo) de cada repo, com cache e TTL.
+# Só lê: roda a fila do plugin no checkout principal de cada repo, sem escrever bloco nem PR.
+# Chamado pelo orq (orq fila) e pelo orq-prs. Compatível com o bash 3.2 do macOS.
+#
+#   orq-fila [--rapido] [--atualizar] [repo...]   -> JSON em stdout:
+#     { plugin: {path, versao, motivo}, repos: { <repo>: {ok, fonte, idadeMin, motivo, itens, avisos} } }
+#   orq-fila --invalidar <repo>...                -> marca o cache do repo como velho (o esperar usa)
+#   orq-fila --idade                              -> uma linha por repo com a idade do cache
+#
+# fonte: "cache" (dentro do TTL), "fila" (rodou agora), "cache-velho" (a fila falhou; cache até
+# cacheVelhoMaxH), null (sem dado: o orq-prs cai na heurística). --rapido nunca roda a fila.
+set -euo pipefail
+
+AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RAIZ="${ORQ_RAIZ:?orq-fila roda pelo orq (orq fila)}"
+ESTADO="${ORQ_ESTADO:?orq-fila roda pelo orq (orq fila)}"
+CONFIG="${ORQ_CONFIG:-$AQUI/../config/pessoas.json}"
+PLUGINS_JSON="${ORQ_PLUGINS_JSON:-$HOME/.claude/plugins/installed_plugins.json}"
+NODE="${ORQ_FILA_NODE:-node}"
+DIR="$ESTADO/.fila"
+
+die() { echo "orq fila: $*" >&2; exit 1; }
+cfg() { jq -r "$1" "$CONFIG" 2>/dev/null; }
+
+TTL_MIN="${ORQ_FILA_TTL_MIN:-$(cfg '.fila.ttlMin // 15')}"
+TIMEOUT="${ORQ_FILA_TIMEOUT:-$(cfg '.fila.timeoutSeg // 300')}"
+VELHO_H="$(cfg '.fila.cacheVelhoMaxH // 24')"
+MINIMA="$(cfg '.fila.versaoMinima // "0.39.2"')"
+
+rapido=""; atualizar=""; invalidar=""; idade=""; repos=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --rapido) rapido=1 ;;
+    --atualizar) atualizar=1 ;;
+    --invalidar) invalidar=1 ;;
+    --idade) idade=1 ;;
+    -*) die "opção desconhecida '$1'" ;;
+    *) repos+=("$1") ;;
+  esac
+  shift
+done
+[ ${#repos[@]} -gt 0 ] || while IFS= read -r r; do [ -n "$r" ] && repos+=("$r"); done < <(cfg '.fila.repos[]?')
+mkdir -p "$DIR"
+
+if [ -n "$invalidar" ]; then
+  for r in "${repos[@]}"; do : > "$DIR/$r.invalido"; done
+  exit 0
+fi
+
+agora="$(date +%s)"
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
+idade_min() { # arquivo -> minutos (ou vazio)
+  [ -f "$1" ] || return 0; echo $(( (agora - $(mtime "$1")) / 60 )); }
+
+if [ -n "$idade" ]; then
+  for r in "${repos[@]}"; do
+    i="$(idade_min "$DIR/$r.json")"
+    if [ -z "$i" ]; then echo "$r: sem cache"
+    else echo "$r: cache de $i min$( [ -f "$DIR/$r.invalido" ] && echo ' (invalidado por evento do GitHub)')"; fi
+  done
+  exit 0
+fi
+
+# --- plugin: escopo de usuário, nunca as entradas de projeto (versões antigas presas por caminho)
+plugin=""; versao=""; motivo_plugin=""
+if ! command -v "$NODE" >/dev/null 2>&1; then motivo_plugin="node ausente no PATH"
+elif [ ! -f "$PLUGINS_JSON" ]; then motivo_plugin="plugin jaguar-plus não instalado ($PLUGINS_JSON ausente)"
+else
+  plugin="$(jq -r '[.plugins["jaguar-plus@onebeat"][]? | select(.scope == "user") | .installPath][0] // empty' "$PLUGINS_JSON" 2>/dev/null || true)"
+  if [ -z "$plugin" ]; then motivo_plugin="plugin jaguar-plus sem instalação no escopo de usuário"
+  elif [ ! -f "$plugin/skills/flow/scripts/flow-queue.mjs" ]; then motivo_plugin="flow-queue.mjs ausente em $plugin"; plugin=""
+  else
+    versao="$(jq -r '.version // empty' "$plugin/.claude-plugin/plugin.json" 2>/dev/null || true)"
+    if ! jq -en --arg v "${versao:-0}" --arg m "$MINIMA" \
+        'def n: split(".") | map(tonumber? // 0); ($v | n) >= ($m | n)' >/dev/null; then
+      motivo_plugin="plugin jaguar-plus ${versao:-?} abaixo da mínima $MINIMA"; plugin=""
+    fi
+  fi
+fi
+
+# itens da fila: todo objeto com branch+state+vez, um por branch. Falta de campo = formato mudou.
+EXTRAI='[.. | objects | select(has("branch") and has("state") and has("vez"))] | unique_by(.branch)'
+valido() { # arquivo
+  jq -e "(.repo | type == \"string\") and ($EXTRAI | all(has(\"hml\") and has(\"prod\") and has(\"comando\") and has(\"label\")))" "$1" >/dev/null 2>&1
+}
+fresco() { # repo
+  local i; i="$(idade_min "$DIR/$1.json")"
+  [ -n "$i" ] && [ ! -f "$DIR/$1.invalido" ] && [ "$i" -lt "$TTL_MIN" ] && valido "$DIR/$1.json"
+}
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+rodar() { # repo -> grava $T/<repo>.{json,err,rc}
+  local r="$1" pid w rc=0
+  if [ ! -d "$RAIZ/$r" ]; then echo "checkout ausente ($RAIZ/$r)" > "$T/$r.motivo"; return; fi
+  ( cd "$RAIZ/$r" && exec "$NODE" "$plugin/skills/flow/scripts/flow-queue.mjs" --resumo ) > "$T/$r.json" 2> "$T/$r.err" < /dev/null &
+  pid=$!
+  ( sleep "$TIMEOUT"; kill -TERM "$pid" 2>/dev/null && echo "a fila passou de ${TIMEOUT}s" > "$T/$r.motivo" ) >/dev/null 2>&1 &
+  w=$!
+  wait "$pid" || rc=$?
+  kill "$w" 2>/dev/null || true; wait "$w" 2>/dev/null || true
+  if [ -f "$T/$r.motivo" ]; then return; fi
+  if [ "$rc" != 0 ]; then echo "a fila saiu com rc=$rc: $(grep -v '^warning:' "$T/$r.err" | tail -n1)" > "$T/$r.motivo"; return; fi
+  if ! valido "$T/$r.json"; then echo "formato da fila mudou (plugin ${versao:-?})" > "$T/$r.motivo"; return; fi
+  mv "$T/$r.json" "$DIR/$r.json.novo" && mv "$DIR/$r.json.novo" "$DIR/$r.json"
+  cp "$T/$r.err" "$DIR/$r.err"; rm -f "$DIR/$r.invalido"
+}
+
+pend=()
+for r in "${repos[@]}"; do
+  if [ -n "$rapido" ]; then continue; fi
+  if [ -z "$atualizar" ] && fresco "$r"; then continue; fi
+  if [ -z "$plugin" ]; then echo "$motivo_plugin" > "$T/$r.motivo"; continue; fi
+  pend+=("$r")
+done
+for r in ${pend[@]+"${pend[@]}"}; do rodar "$r" & done
+wait
+
+# --- saída ------------------------------------------------------------------
+echo '{}' > "$T/saida.json"
+for r in "${repos[@]}"; do
+  arq="$DIR/$r.json"; i="$(idade_min "$arq")"; motivo="$(cat "$T/$r.motivo" 2>/dev/null || true)"
+  fonte=null
+  if [ -n "$i" ] && valido "$arq"; then
+    if [ -z "$motivo" ] && [ ! -f "$DIR/$r.invalido" ] && [ "$i" -lt "$TTL_MIN" ]; then
+      fonte='"cache"'; for p in ${pend[@]+"${pend[@]}"}; do [ "$p" = "$r" ] && fonte='"fila"'; done
+    elif [ "$i" -lt $(( VELHO_H * 60 )) ]; then fonte='"cache-velho"'
+    fi
+  fi
+  [ -n "$motivo" ] || [ "$fonte" != null ] || motivo="sem cache da fila${rapido:+ (--rapido não roda a fila)}"
+  if [ "$fonte" != null ]; then
+    jq --arg r "$r" --argjson f "$fonte" --argjson i "${i:-0}" --arg m "$motivo" --rawfile err "$(test -f "$DIR/$r.err" && echo "$DIR/$r.err" || echo /dev/null)" \
+      --slurpfile d "$arq" ". + {(\$r): {ok: true, fonte: \$f, idadeMin: \$i, motivo: (if \$m == \"\" then null else \$m end),
+        itens: (\$d[0] | $EXTRAI),
+        avisos: (\$err | split(\"\n\") | map(select(test(\"^plugin jaguar-plus\"))))}}" \
+      "$T/saida.json" > "$T/x"
+  else
+    jq --arg r "$r" --arg m "$motivo" '. + {($r): {ok: false, fonte: null, idadeMin: null, motivo: $m, itens: [], avisos: []}}' "$T/saida.json" > "$T/x"
+  fi
+  mv "$T/x" "$T/saida.json"
+done
+jq --arg p "$plugin" --arg v "$versao" --arg m "$motivo_plugin" \
+  '{plugin: {path: (if $p == "" then null else $p end), versao: (if $v == "" then null else $v end),
+             motivo: (if $m == "" then null else $m end)}, repos: .}' "$T/saida.json"
